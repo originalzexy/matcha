@@ -266,7 +266,31 @@ restrictedButtons = {
     "BTR-80",
     "VCAC Mephisto",
     "Barrett M82 Giver",
-    "Barrett M82"
+    "Barrett M82",
+    "Mi28 Havoc",
+    "Invictus",
+    "Eurocopter Tiger",
+    "KA-52 Alligator",
+    "AH-64 Apache",
+    "Super Stallion",
+    "UH-60 Black Hawk",
+    "RAH-66 Comanche",
+    "Z-10",
+    "A129 Mangusta",
+    "Raider X",
+    "AH-1Z Viper",
+    "Invictus",
+    "KSG 12 Giver",
+    "PP19 Bizon Giver",
+    "USS Zumwalt",
+    "KA-50 Black Shark",
+    "Fairmile",
+    "PG-02",
+    "Project 1124",
+    "USS Douglas",
+    "Pr. 206",
+    "USS Independence",
+    "Sigma-Class Corvette",
 }
 
 oilDeposits = {
@@ -295,7 +319,7 @@ UI.AddTab("War Tycoon", function(tab)
         print("AutoBuy: " .. tostring(state))
         autoBuyRunning = state
     end)
-    autobuy:Keybind("enabled_kb", 0x70, "hold")
+    autobuy:Keybind("enabled_kb", 0x70, "toggle")
 
 
 
@@ -346,9 +370,12 @@ spawn(function()
         for i,v in ipairs(playersService:GetPlayers()) do
             if v.AdminRank.Value ~= 0 then
                 print("Admin detected: " .. v.Name)
+                notify("turn off everything cuz there's an admin", "Admin detected!", 60)
                 autoBuyRunning = false
                 break
             end
         end
     end
 end)
+
+notify("welcome to my script by originalzex", "Executed", 5)
