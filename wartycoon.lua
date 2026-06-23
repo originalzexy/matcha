@@ -159,7 +159,6 @@ local function collectMoney()
             hrp.Position = collectorPos
             wait(0.5)
             hrp.Position = savedPos
-            autobuyActive = false
         end
     end
 end
@@ -213,7 +212,7 @@ local function autoBuyUpgrades()
         end
     end
     
-    
+    autoBuyActive = false
 end
 
 local function teleportTo(location) 
@@ -227,6 +226,56 @@ local function teleportTo(location)
         hrp.CFrame = location.CFrame + Vector3.new(0, 3, 0)
         return
     end
+end
+
+local function getAllBarrels()
+    print("getting all barrels")
+    task.wait(2)
+    tycoon = getTycoon()
+    if oilDeposits[tycoon.Name] == nil then 
+        notify("This base is not supported yet. Star the post so I get more motivation", "Error", 5)
+        return 0
+    end
+
+    teleportTo(locations["Oil Rig 1"])
+    wait(0.5)
+    keypress("0x45")
+    task.wait(2)
+    keyrelease("0x45")
+
+    teleportTo(oilDeposits[tycoon.Name])
+    wait(0.5)
+    keypress("0x45")
+    task.wait(2)
+    keyrelease("0x45")
+
+    task.wait(8)
+
+    teleportTo(locations["Oil Rig 2"])
+    wait(0.5)
+    keypress("0x45")
+    task.wait(2)
+    keyrelease("0x45")
+
+    teleportTo(oilDeposits[tycoon.Name])
+    wait(0.5)
+    keypress("0x45")
+    task.wait(2)
+    keyrelease("0x45")
+
+    task.wait(8)
+
+    teleportTo(locations["Oil Warehouse"])
+    wait(0.5)
+    keypress("0x45")
+    task.wait(2)
+    keyrelease("0x45")
+
+    teleportTo(oilDeposits[tycoon.Name])
+    wait(0.5)
+    keypress("0x45")
+    task.wait(2)
+    keyrelease("0x45")
 end
 
 autoBuyRunning = false
@@ -297,13 +346,14 @@ oilDeposits = {
     ["Alpha"] = CFrame.new(-879.42, 65.52, -4862.38, 0.28, -0, -0.96, -0, 1, -0, 0.96, 0, 0.28),
     ["Bravo"] = CFrame.new(103.88, 65.37, -4906.46, -0, -0, -1, -0, 1, -0, 1, 0, -0),
     ["Charlie"] = CFrame.new(1107.75, 67.35, -4643.60, -0.22, -0, -0.97, 0, 1, -0, 0.97, -0, -0.22),
-    ["Delta"] = CFrame.new(2264.97, 68.31, -3745.31, -0.70, -0, -0.71, 0, 1, -0, 0.71, -0, -0.70)
-
-
+    ["Delta"] = CFrame.new(2264.97, 68.31, -3745.31, -0.70, -0, -0.71, 0, 1, -0, 0.71, -0, -0.70),
+    ["Echo"] = CFrame.new(2867.60, 67.62, -2731.19, -0.90, -0, -0.43, -0, 1, -0, 0.43, 0, -0.90)
 }
 
+
+
 locations = {
-    ["Oil Rig 1"] = CFrame.new(1705.62, 120.95, 3778.51, -1, 0, -0, 0, 1, 0, 0, 0, -1),
+    ["Oil Rig 1"] = CFrame.new(1705.62, 120.95, 3778.51, -1, 0, -0, 0, 1, 0, 0, 0, -1) + Vector3.new(0,8,0),
     ["Oil Rig 2"] = CFrame.new(-1937.25, 120.95, -3697.70, 1, -0, 0.04, 0, 1, 0, -0.04, -0, 1),
     ["Oil Warehouse"] = CFrame.new(-1209.48, 72.70, -879.73, 0.75, 0, -0.67, -0, 1, -0, 0.67, 0, 0.75),
     ["Base"] = getTycoon():FindFirstChild("MainPart").CFrame + Vector3.new(0, 5, 0),
@@ -314,14 +364,16 @@ locations = {
 
 
 UI.AddTab("War Tycoon", function(tab)
-    local autobuy = tab:Section("AutoBuy", "Left")
-    autobuy:Toggle("autobuy_on", "AutoBuy", function(state)
+    local autoFarm = tab:Section("AutoFarm", "Left")
+    autoFarm:Toggle("autobuy_on", "AutoBuy", function(state)
         print("AutoBuy: " .. tostring(state))
         autoBuyRunning = state
     end)
-    autobuy:Keybind("enabled_kb", 0x70, "toggle")
+    autoFarm:Keybind("enabled_kb", 0x70, "toggle")
 
-
+    autoFarm:Button("Get All Barrels", function() 
+        task.spawn(getAllBarrels)
+    end)
 
     local teleports = tab:Section("Teleports", "Right")
     teleports:Button("Oil Rig 1", function()
@@ -349,16 +401,40 @@ UI.AddTab("War Tycoon", function(tab)
         teleportTo(locations["Control Point"])
     
     end)
+
+
 end)
+
+-- spawn(function()
+--     while true do
+--         wait(0.1)
+--         if autoBuyRunning and not autoBuyActive then
+--             autoBuyActive = true
+--             print("Running auto-buy cycle...")
+--             autoBuyUpgrades()
+--             collectMoney()
+--             autoBuyActive = false
+--         end
+--     end
+-- end)
 
 spawn(function()
     while true do
-        wait(0.1)
+        task.wait(0.1)
+
         if autoBuyRunning and not autoBuyActive then
             autoBuyActive = true
-            print("Running auto-buy cycle...")
-            autoBuyUpgrades()
-            collectMoney()
+
+            local success, err = pcall(function()
+                print("Running auto-buy cycle...")
+                autoBuyUpgrades()
+                collectMoney()
+            end)
+
+            if not success then
+                warn(err)
+            end
+
             autoBuyActive = false
         end
     end
@@ -368,6 +444,9 @@ spawn(function()
     while true do
         wait(0.1)
         for i,v in ipairs(playersService:GetPlayers()) do
+            if not v then
+                continue
+            end
             if v.AdminRank.Value ~= 0 then
                 print("Admin detected: " .. v.Name)
                 notify("turn off everything cuz there's an admin", "Admin detected!", 60)
