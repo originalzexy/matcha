@@ -1,0 +1,117 @@
+local playerService = game:GetService("Players")
+local localPlayer = playerService.LocalPlayer
+local hrp = localPlayer.Character:FindFirstChild("HumanoidRootPart")
+local bases = game.Workspace.Bases
+local restPosition = CFrame.new(403.90, 13.59, 252.84, -1, -0, -0.05, -0, 1, -0, 0.05, -0, -1)
+
+
+setrobloxinput(true)
+local function getBase()
+    for i,v in pairs(bases:GetChildren()) do
+        if v:FindFirstChild("Floor") and v.Floor:FindFirstChild("BillboardGui") and v.Floor.BillboardGui:FindFirstChild("TextLabel") then
+            if v.Floor.BillboardGui.TextLabel.Text == localPlayer.Name then
+                print("Found base", v.Name)
+                return v
+            end
+        end
+    end
+end
+
+local base = getBase()
+
+local function grabNuke(nuke)
+    local nukePosition = nuke.Position
+    local hrpPosition = hrp.Position
+
+    hrp.Position = nukePosition
+    print("Finished grabbing")
+end
+
+local nukes = {}
+local function scanNukes()
+    if base == nil or not base then
+        notify("BASE IS NIL")
+    end
+    print("Scanning nukes")
+    nukes = {}
+    print(base.Nukes)
+    for _, descendent in pairs(base.Nukes:GetDescendants()) do
+        print("Scanning descendent", descendent.Name)
+        if descendent.Name == "TextLabel" then
+            local key = descendent.Text
+
+            if not nukes[key] then
+                nukes[key] = {descendent.Parent.Parent}
+            else
+                table.insert(nukes[key], descendent.Parent.Parent)
+            end
+        end
+    end
+    print("Finished scanning nukes")
+end
+
+-- for _, descendent in pairs(base.Nukes:GetDescendants()) do
+--     if descendent.Name == "TextLabel" then
+--         grabNuke(descendent.Parent.Parent)
+--     end
+-- end
+
+local dropButton = localPlayer.PlayerGui.ScreenGui.HoldingFrame.Drop.TextButton
+
+local function mergeNukes()
+    working = true
+    scanNukes()
+    print("Starting merge in 1 second")
+    task.wait(1)
+    for nukeStrength, nukeList in pairs(nukes) do
+        print("Merging nukes of strength", nukeStrength)
+        for i = 1, #nukeList - 1, 2 do
+            mousemoveabs(dropButton.AbsolutePosition.X + dropButton.AbsoluteSize.X / 2, dropButton.AbsolutePosition.Y + dropButton.AbsoluteSize.Y / 2)
+            task.wait(0.1)
+            mouse1click()
+            task.wait(0.5)
+            -- if nukeGrabbed and nukeHeld.OverheadNuke.TextLabel ~= nukeStrength then
+            --     print("Accidently picked up nuke, dropping it")
+            --     mousemoveabs(localPlayer.PlayerGui.ScreenGui.HoldingFrame.Drop.TextButton.AbsolutePosition.X, localPlayer.PlayerGui.ScreenGui.HoldingFrame.Drop.TextButton.AbsolutePosition.Y)
+            --     mouse1click()
+            -- end
+            local first = nukeList[i]
+            local second = nukeList[i + 1]
+            print("Grabbing nukes", first.Name, "and", second.Name)
+
+            grabNuke(first)
+            task.wait(0.5)
+            grabNuke(second)
+            task.wait(0.5)
+
+            hrp.CFrame = restPosition + Vector3.new(0, 3, 0)
+        end
+    end
+    working = false
+end
+
+local autoFarmActive = false
+local working = false
+
+UI.AddTab("Merge Nukes", function(tab)
+    local autoFarm = tab:Section("AutoFarm", "Left")
+    
+    autoFarm:Toggle("autofarm_on", "Autofarm", function(state)
+        print("AutoFarm fired ")
+        print(state)
+        autoFarmActive = state
+    end)
+
+
+end)
+
+task.spawn(function () 
+    while true do
+        if autoFarmActive and not working then
+            print("wokring")
+            wait(0.1)
+            mergeNukes()
+        end
+    wait(0.1)
+    end
+end)
