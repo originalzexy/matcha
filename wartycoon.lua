@@ -1,455 +1,424 @@
-local playersService = game:GetService("Players")
-local localPlayer = playersService.LocalPlayer
-local playerName = localPlayer.Name
+-- ============================================================
+--  War Tycoon AutoFarm Script  |  by originalzex
+-- ============================================================
 
-local playersService2 = game:GetService("Players")
-local localPlayer2 = playersService2.LocalPlayer
-local mouse = localPlayer2:GetMouse()
-local workspace = game:GetService("Workspace")
-local camera = workspace.CurrentCamera
+local Players   = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 
-local function getPlayerTycoon()
-    local tycoonRoot = workspace:FindFirstChild("Tycoon")
-    local tycoonsFolder = tycoonRoot and tycoonRoot:FindFirstChild("Tycoons")
+local localPlayer = Players.LocalPlayer
+
+-- ── State ────────────────────────────────────────────────────
+local autoBuyRunning = false
+local autoBuyActive  = false
+
+-- ── Button restrictions config ────────────────────────────────
+-- To add a new button, add a line inside the relevant category.
+-- To add a new category, add a new block: { Category = "Name", Icon = "lucide-icon", Buttons = { ... } }
+-- Default = true  → autobuy SKIPS this button (restricted)
+-- Default = false → autobuy WILL buy this button (allowed)
+local restrictionCategories = {
+    {
+        Category = "Helicopters",
+        Icon     = "wind",
+        Buttons  = {
+            { Name = "Mi28 Havoc",       Default = true },
+            { Name = "Invictus",         Default = true },
+            { Name = "Eurocopter Tiger", Default = true },
+            { Name = "KA-52 Alligator",  Default = true },
+            { Name = "AH-64 Apache",     Default = true },
+            { Name = "Super Stallion",   Default = true },
+            { Name = "UH-60 Black Hawk", Default = true },
+            { Name = "RAH-66 Comanche",  Default = true },
+            { Name = "Z-10",             Default = true },
+            { Name = "A129 Mangusta",    Default = true },
+            { Name = "Raider X",         Default = true },
+            { Name = "AH-1Z Viper",      Default = true },
+            { Name = "KA-50 Black Shark", Default = true },
+        },
+    },
+    {
+        Category = "Ground Vehicles",
+        Icon     = "shield",
+        Buttons  = {
+            { Name = "Speedy Humvee",      Default = true },
+            { Name = "HEMTT A3",           Default = true },
+            { Name = "Patriot AA",         Default = true },
+            { Name = "Humvee Hawkeye",     Default = true },
+            { Name = "Lazar 3 APC",        Default = true },
+            { Name = "M142 HIMARS ATACMS", Default = true },
+            { Name = "Stryker MGS",        Default = true },
+            { Name = "M142 HIMARS",        Default = true },
+            { Name = "LAV-25",             Default = true },
+            { Name = "Pantsir S1",         Default = true },
+            { Name = "Type 625E",          Default = true },
+            { Name = "M1117 Guardian",     Default = true },
+            { Name = "JLTV",               Default = true },
+            { Name = "LAV-AD",             Default = true },
+            { Name = "Stryker M-SHORAD",   Default = true },
+            { Name = "Gunship",            Default = true },
+            { Name = "BTR-80",             Default = true },
+            { Name = "VCAC Mephisto",      Default = true },
+        },
+    },
+    {
+        Category = "Naval",
+        Icon     = "anchor",
+        Buttons  = {
+            { Name = "USS Zumwalt",          Default = true },
+            { Name = "Fairmile",             Default = true },
+            { Name = "PG-02",                Default = true },
+            { Name = "Project 1124",         Default = true },
+            { Name = "USS Douglas",          Default = true },
+            { Name = "Pr. 206",              Default = true },
+            { Name = "USS Independence",     Default = true },
+            { Name = "Sigma-Class Corvette", Default = true },
+            { Name = "PACV-77 Windshear", Default = true },
+            { Name = "PACV-78 Rampage", Default = true },
+        },
+    },
+    {
+        Category = "Weapons",
+        Icon     = "crosshair",
+        Buttons  = {
+            { Name = "FAMAS Group Gun",        Default = true },
+            { Name = "FAL Heavy Giver",        Default = true },
+            { Name = "Explosive Sniper Giver", Default = true },
+            { Name = "Desert Eagle Giver",     Default = true },
+            { Name = "Javelin Giver",          Default = true },
+            { Name = "AWP Giver",              Default = true },
+            { Name = "Remington ACR Giver",    Default = true },
+            { Name = "Gas Grenade Giver",      Default = true },
+            { Name = "USP 45 Giver",           Default = true },
+            { Name = "AK12 Giver",             Default = true },
+            { Name = "Saiga-12k Giver",        Default = true },
+            { Name = "Barrett M82 Giver",      Default = true },
+            { Name = "Barrett M82",            Default = true },
+            { Name = "KSG 12 Giver",           Default = true },
+            { Name = "PP19 Bizon Giver",       Default = true },
+        },
+    },
+    {
+        Category = "Misc",
+        Icon     = "box",
+        Buttons  = {
+            { Name = "2x Health Armor",  Default = true },
+            { Name = "KizmoTek Clothing", Default = true },
+        },
+    },
+}
+
+-- Build the live lookup table from the config above
+local restrictedButtons = {}
+for _, category in ipairs(restrictionCategories) do
+    for _, entry in ipairs(category.Buttons) do
+        restrictedButtons[entry.Name] = entry.Default
+    end
+end
+
+-- ── Oil deposit CFrames (per tycoon name) ────────────────────
+local oilDeposits = {
+    ["Alpha"]   = CFrame.new(-879.42,  65.52, -4862.38,  0.28, -0, -0.96, -0, 1, -0, 0.96, 0,  0.28),
+    ["Bravo"]   = CFrame.new( 103.88,  65.37, -4906.46, -0,   -0, -1,    -0, 1, -0, 1,    0, -0),
+    ["Charlie"] = CFrame.new(1107.75,  67.35, -4643.60, -0.22, -0, -0.97,  0, 1, -0, 0.97, -0, -0.22),
+    ["Delta"]   = CFrame.new(2264.97,  68.31, -3745.31, -0.70, -0, -0.71,  0, 1, -0, 0.71, -0, -0.70),
+    ["Echo"]    = CFrame.new(2867.60,  67.62, -2731.19, -0.90, -0, -0.43, -0, 1, -0, 0.43,  0, -0.90),
+}
+
+-- ── Static locations ─────────────────────────────────────────
+local staticLocations = {
+    ["Oil Rig 1"]     = CFrame.new( 1705.62, 120.95,  3778.51, -1,    0, -0,    0, 1,  0,  0,    0, -1) + Vector3.new(0, 8, 0),
+    ["Oil Rig 2"]     = CFrame.new(-1937.25, 120.95, -3697.70,  1,   -0,  0.04, 0, 1,  0, -0.04,-0,  1),
+    ["Oil Warehouse"] = CFrame.new(-1209.48,  72.70,  -879.73,  0.75, 0, -0.67,-0, 1, -0,  0.67, 0,  0.75),
+    ["Control Point"] = CFrame.new( -502.28, 177.04, -1029.86, -0.94,-0,  0.35,-0, 1,  0, -0.35, 0, -0.94),
+}
+
+-- ── Helpers ──────────────────────────────────────────────────
+local function getTycoon()
+    local team = localPlayer.Team
+    if not team then return nil end
+    local tycoonRoot = Workspace:FindFirstChild("Tycoon")
+    if not tycoonRoot then return nil end
+    local tycoonsFolder = tycoonRoot:FindFirstChild("Tycoons")
     if not tycoonsFolder then return nil end
-    for i2, tycoon in ipairs(tycoonsFolder:GetChildren()) do
-        if tycoon:GetAttribute("Owner") == localPlayer2.Name then
-            return tycoon.Name
-        end
-    end
-    return nil
-end
-
-local function parsePrice(priceText)
-    if not priceText or typeof(priceText) ~= "string" then return nil end
-    if string.sub(priceText, 1, 1) ~= "$" then return nil end
-    local cleanedPriceText = priceText:gsub("[$,]", "")
-    return tonumber(cleanedPriceText)
-end
-
-local function getButtonPrice(button)
-    local neonPart = button:FindFirstChild("Neon")
-    if not neonPart then return nil end
-    local uiContainer = neonPart:FindFirstChild("UI")
-    if not uiContainer then return nil end
-    local billboardGui = uiContainer:FindFirstChild("BillboardGui")
-    if not billboardGui then return nil end
-    local frame = billboardGui:FindFirstChild("Frame")
-    if not frame then return nil end
-    local priceLabel = frame:FindFirstChild("Price")
-    if not priceLabel then return nil end
-    local priceText2 = priceLabel.Text
-    if not priceText2 then
-        priceText2 = priceLabel:GetAttribute("Text")
-    end
-    return parsePrice(priceText2)
-end
-
-
-local function getRebirths()
-    local leaderstats = localPlayer2:FindFirstChild("leaderstats")
-    if not leaderstats then return 0 end
-    local rebirthsValue = leaderstats:FindFirstChild("Rebirths")
-    if not rebirthsValue then return 0 end
-    return rebirthsValue.Value or 0
-end
-
-local function getCash()
-    local leaderstats = localPlayer2:FindFirstChild("leaderstats")
-    if not leaderstats then return 0 end
-    local cashValue = leaderstats:FindFirstChild("Cash")
-    if not cashValue then return 0 end
-    return cashValue.Value or 0
+    return tycoonsFolder:FindFirstChild(team.Name)
 end
 
 local function getHRP()
-    local character = workspace:FindFirstChild(localPlayer2.Name)
-    if not character then return nil end
-    return character:FindFirstChild("HumanoidRootPart")
+    local character = Workspace:FindFirstChild(localPlayer.Name)
+    return character and character:FindFirstChild("HumanoidRootPart")
 end
 
-local function getTycoon()
-    local playerTeamName = localPlayer2.Team and localPlayer2.Team.Name
-    if not playerTeamName then return nil end
-    local tycoonRootFolder = workspace:FindFirstChild("Tycoon")
-    if not tycoonRootFolder then return nil end
-    local tycoonsFolder = tycoonRootFolder:FindFirstChild("Tycoons")
-    if not tycoonsFolder then return nil end
-    return tycoonsFolder:FindFirstChild(playerTeamName)
+local function getLeaderstat(name)
+    local ls = localPlayer:FindFirstChild("leaderstats")
+    if not ls then return 0 end
+    local val = ls:FindFirstChild(name)
+    return val and val.Value or 0
 end
 
-local function getUnpurchasedButtons()
-    local tycoon = getTycoon()
-    if not tycoon then return {} end
-    local buttonsFolder = tycoon:FindFirstChild("UnpurchasedButtons")
-    if not buttonsFolder then return {} end
-    local unpurchasedButtons = {}
-    print("Hi")
-    for _, button in ipairs(buttonsFolder:GetChildren()) do
-        if button:IsA("Model") then
-            table.insert(unpurchasedButtons, button)
-            print("Added button: " .. button.Name)
-        end
-    end
-    print("Found", #unpurchasedButtons, "buttons")
-    return unpurchasedButtons
+local function getCash()     return getLeaderstat("Cash")     end
+local function getRebirths() return getLeaderstat("Rebirths") end
 
+-- ── Price parsing ────────────────────────────────────────────
+local function parsePrice(priceText)
+    if type(priceText) ~= "string" or priceText:sub(1, 1) ~= "$" then return nil end
+    -- () discards gsub's substitution count so tonumber doesn't receive it as a base
+    return tonumber((priceText:gsub("[$,]", "")))
 end
 
-local function teleportToButton(button)
-    print("Attempting to teleport to button: " .. button.Name)
-    local hrp = getHRP()
-    if not hrp then return end
-    local buttonCFrame = button.Part and button.Part.CFrame
-    if not buttonCFrame then return end
-    hrp.CFrame = buttonCFrame + Vector3.new(0, 1, 0)
-    return true
+local function getButtonPrice(button)
+    local label = button:FindFirstChild("Neon")
+        and button.Neon:FindFirstChild("UI")
+        and button.Neon.UI:FindFirstChild("BillboardGui")
+        and button.Neon.UI.BillboardGui:FindFirstChild("Frame")
+        and button.Neon.UI.BillboardGui.Frame:FindFirstChild("Price")
+    if not label then return nil end
+    local text = (type(label.Text) == "string" and #label.Text > 0 and label.Text)
+              or (type(label:GetAttribute("Text")) == "string" and label:GetAttribute("Text"))
+    if not text then return nil end
+    return parsePrice(text)
 end
 
 local function getRebirthRequirement(button)
-    if not button then return 0 end
-    local buttonNeon = button:FindFirstChild("Neon")
-    if not buttonNeon then return 0 end
-    local buttonUI = buttonNeon:FindFirstChild("UI")
-    if not buttonUI then return 0 end
-    local buttonBillboard = buttonUI:FindFirstChild("BillboardGui")
-    if not buttonBillboard then return 0 end
-
-    local price = buttonBillboard.Frame:FindFirstChild("Price") and buttonBillboard.Frame:FindFirstChild("Price").Text
-    if not price then return 0 end
-    if string.find(price, "Rebirth") then
-        local rebirthRequirement = string.match(price, "%d")
-        if rebirthRequirement then
-            return tonumber(rebirthRequirement) or 0
-        end
+    local frame = button:FindFirstChild("Neon")
+        and button.Neon:FindFirstChild("UI")
+        and button.Neon.UI:FindFirstChild("BillboardGui")
+        and button.Neon.UI.BillboardGui:FindFirstChild("Frame")
+    if not frame then return 0 end
+    local priceLabel = frame:FindFirstChild("Price")
+    if not priceLabel then return 0 end
+    local text = priceLabel.Text
+    if text and text:find("Rebirth") then
+        return tonumber((text:match("%d+"))) or 0
     end
     return 0
 end
 
-
-
-local function getCollectorPosition()
-
-    local tycoonModel = getTycoon()
-    if not tycoonModel then return nil end
-    
-    local essentialsFolder = tycoonModel:FindFirstChild("Essentials")
-    if not essentialsFolder then return nil end
-    
-    local cashCollectors = essentialsFolder:FindFirstChild("CollectorParts")
-    if not cashCollectors then return nil end
-    
-    local collector = cashCollectors:FindFirstChild("Collector")
-    if not collector then return nil end
-
-    local bottom = collector:FindFirstChild("Bottom")
-    if not bottom then return nil end
-
-    print("Collector position: ", bottom.Position)
-    return bottom.Position
-end
-
-local function collectMoney()
-    print("collecting money...")
-    local hrp = getHRP()
-    if hrp then
-        local collectorPos = getCollectorPosition()
-        if collectorPos then
-            local savedPos = hrp.Position
-            hrp.Position = collectorPos
-            wait(0.5)
-            hrp.Position = savedPos
-        end
-    end
-end
-
-local function autoBuyUpgrades()    
-    local playerTycoon2 = getTycoon()
-    if not playerTycoon2 then return end
-    
-    local unpurchasedButtons = playerTycoon2:FindFirstChild("UnpurchasedButtons")
-
-    if not unpurchasedButtons then return end
-    
-    local playerRebirths = getRebirths()
-    local playerCash = getCash()
-    
-    local medbayStart = unpurchasedButtons:FindFirstChild("Medbay Start")
-    if medbayStart then
-        teleportToButton(medbayStart)
-        wait(0.5)
-    end
-    
-    for button3, button in ipairs(unpurchasedButtons:GetChildren()) do
-        if button:IsA("Model") then
-            -- local buttonType = button:GetAttribute("ButtonType")
-            -- if buttonType == "Clothing" or buttonType == "Group" or buttonType == "Gamepass" or buttonType == "Reward" or buttonType == "Operation" or buttonType == "Medal" then
-            --     -- Skip these button types
-            -- else
-            if string.find(string.lower(button.Name), "gamepass") or table.find(restrictedButtons, button.Name) then
-                -- Skip gamepass buttons
-            else
-                local price = getButtonPrice(button)
-                local rebirthRequirement3 = getRebirthRequirement(button)
-                local hasRequiredRebirths = playerRebirths >= rebirthRequirement3
-                if price then
-                    local canAffordPurchase = playerCash >= price
-                    print("Can afford purchase for button: " .. tostring(canAffordPurchase))
-                    if canAffordPurchase and hasRequiredRebirths then
-                        if teleportToButton(button) then
-                            
-                            wait(0.1)
-                            playerCash = getCash()
-                        end
-                    end
-                else
-                    -- No price means it's free
-                    if hasRequiredRebirths then
-                        teleportToButton(button)
-                    end
-                end
-            end
-        end
-    end
-    
-    autoBuyActive = false
-end
-
-local function teleportTo(location) 
+-- ── Movement ─────────────────────────────────────────────────
+local function teleportTo(location)
     local hrp = getHRP()
     if not hrp then return end
     if typeof(location) == "CFrame" then
         hrp.CFrame = location + Vector3.new(0, 3, 0)
-        return
-    end
-    if location then
+    elseif location and location.CFrame then
         hrp.CFrame = location.CFrame + Vector3.new(0, 3, 0)
+    end
+end
+
+local function teleportToButton(button)
+    local hrp = getHRP()
+    if not hrp or not button.Part then return false end
+    hrp.CFrame = button.Part.CFrame + Vector3.new(0, 1, 0)
+    return true
+end
+
+-- ── Collector ────────────────────────────────────────────────
+local function getCollectorPosition()
+    local tycoon = getTycoon()
+    if not tycoon then return nil end
+    local bottom = tycoon:FindFirstChild("Essentials")
+        and tycoon.Essentials:FindFirstChild("CollectorParts")
+        and tycoon.Essentials.CollectorParts:FindFirstChild("Collector")
+        and tycoon.Essentials.CollectorParts.Collector:FindFirstChild("Bottom")
+    return bottom and bottom.Position
+end
+
+local function collectMoney()
+    local hrp = getHRP()
+    if not hrp then return end
+    local collectorPos = getCollectorPosition()
+    if not collectorPos then return end
+    local savedPos = hrp.Position
+    hrp.Position = collectorPos
+    task.wait(0.5)
+    hrp.Position = savedPos
+end
+
+-- ── Auto-buy ─────────────────────────────────────────────────
+local function autoBuyUpgrades()
+    local tycoon = getTycoon()
+    if not tycoon then return end
+
+    local unpurchasedButtons = tycoon:FindFirstChild("UnpurchasedButtons")
+    if not unpurchasedButtons then return end
+
+    local playerRebirths = getRebirths()
+
+    local medbayStart = unpurchasedButtons:FindFirstChild("Medbay Start")
+    if medbayStart then
+        teleportToButton(medbayStart)
+        task.wait(0.5)
+    end
+
+    for _, button in ipairs(unpurchasedButtons:GetChildren()) do
+        if not autoBuyRunning then break end
+        if not button:IsA("Model") then continue end
+        if button.Name:lower():find("gamepass") then continue end
+        if restrictedButtons[button.Name] then continue end
+
+        local rebirthReq = getRebirthRequirement(button)
+        if playerRebirths < rebirthReq then continue end
+
+        local price = getButtonPrice(button)
+        if price then
+            if getCash() >= price and teleportToButton(button) then
+                task.wait(1)
+            end
+        else
+            teleportToButton(button)
+        end
+    end
+end
+
+-- ── Barrel collection ────────────────────────────────────────
+local function getAllBarrels()
+    task.wait(1)
+    local tycoon = getTycoon()
+    if not tycoon then return end
+
+    if not oilDeposits[tycoon.Name] then
+        Library:Notify({ Title = "Error", Content = "This base is not supported yet.", Duration = 5 })
         return
     end
-end
 
-local function getAllBarrels()
-    print("getting all barrels")
-    task.wait(2)
-    tycoon = getTycoon()
-    if oilDeposits[tycoon.Name] == nil then 
-        notify("This base is not supported yet. Star the post so I get more motivation", "Error", 5)
-        return 0
+    local deposit = oilDeposits[tycoon.Name]
+
+    local function visitRigAndDeposit(rigLocation)
+        teleportTo(rigLocation)
+        task.wait(0.5)
+        keypress("0x45")
+        task.wait(2)
+        keyrelease("0x45")
+
+        teleportTo(deposit)
+        task.wait(0.5)
+        keypress("0x45")
+        task.wait(2)
+        keyrelease("0x45")
+        task.wait(8)
     end
 
-    teleportTo(locations["Oil Rig 1"])
-    wait(0.5)
-    keypress("0x45")
-    task.wait(2)
-    keyrelease("0x45")
-
-    teleportTo(oilDeposits[tycoon.Name])
-    wait(0.5)
-    keypress("0x45")
-    task.wait(2)
-    keyrelease("0x45")
-
-    task.wait(8)
-
-    teleportTo(locations["Oil Rig 2"])
-    wait(0.5)
-    keypress("0x45")
-    task.wait(2)
-    keyrelease("0x45")
-
-    teleportTo(oilDeposits[tycoon.Name])
-    wait(0.5)
-    keypress("0x45")
-    task.wait(2)
-    keyrelease("0x45")
-
-    task.wait(8)
-
-    teleportTo(locations["Oil Warehouse"])
-    wait(0.5)
-    keypress("0x45")
-    task.wait(2)
-    keyrelease("0x45")
-
-    teleportTo(oilDeposits[tycoon.Name])
-    wait(0.5)
-    keypress("0x45")
-    task.wait(2)
-    keyrelease("0x45")
+    visitRigAndDeposit(staticLocations["Oil Rig 1"])
+    visitRigAndDeposit(staticLocations["Oil Rig 2"])
+    visitRigAndDeposit(staticLocations["Oil Warehouse"])
 end
 
-autoBuyRunning = false
-autoBuyActive = false
+-- ── UI ───────────────────────────────────────────────────────
+loadstring(game:HttpGet("https://scripts.wabisabi.mom/wabi-sabi-ui-lib.lua"))()
+local Library = WabiSabi
 
-restrictedButtons = {
-    "FAMAS Group Gun",
-    "2x Health Armor",
-    "FAL Heavy Giver",
-    "Explosive Sniper Giver",
-    "Desert Eagle Giver",
-    "Speedy Humvee",
-    "HEMTT A3",
-    "Patriot AA",
-    "Humvee Hawkeye",
-    "Lazar 3 APC",
-    "M142 HIMARS ATACMS",
-    "Stryker MGS",
-    "M142 HIMARS",
-    "LAV-25",
-    "Pantsir S1",
-    "Type 625E",
-    "M1117 Guardian",
-    "KizmoTek Clothing",
-    "Javelin Giver",
-    "JLTV",
-    "LAV-AD",
-    "AWP Giver",
-    "M142 HIMARS",
-    "Remington ACR Giver",
-    "Gas Grenade Giver",
-    "Stryker M-SHORAD",
-    "USP 45 Giver",
-    "AK12 Giver",
-    "Gunship",
-    "Saiga-12k Giver",
-    "BTR-80",
-    "VCAC Mephisto",
-    "Barrett M82 Giver",
-    "Barrett M82",
-    "Mi28 Havoc",
-    "Invictus",
-    "Eurocopter Tiger",
-    "KA-52 Alligator",
-    "AH-64 Apache",
-    "Super Stallion",
-    "UH-60 Black Hawk",
-    "RAH-66 Comanche",
-    "Z-10",
-    "A129 Mangusta",
-    "Raider X",
-    "AH-1Z Viper",
-    "Invictus",
-    "KSG 12 Giver",
-    "PP19 Bizon Giver",
-    "USS Zumwalt",
-    "KA-50 Black Shark",
-    "Fairmile",
-    "PG-02",
-    "Project 1124",
-    "USS Douglas",
-    "Pr. 206",
-    "USS Independence",
-    "Sigma-Class Corvette",
-}
+local Window = Library:CreateWindow({
+    Title      = "War Tycoon",
+    SubTitle   = "by originalzex",
+    Size       = Vector2.new(700, 540),
+    Resize     = true,
+    ConfigName = "wartycoon",
+})
 
-oilDeposits = {
-    ["Alpha"] = CFrame.new(-879.42, 65.52, -4862.38, 0.28, -0, -0.96, -0, 1, -0, 0.96, 0, 0.28),
-    ["Bravo"] = CFrame.new(103.88, 65.37, -4906.46, -0, -0, -1, -0, 1, -0, 1, 0, -0),
-    ["Charlie"] = CFrame.new(1107.75, 67.35, -4643.60, -0.22, -0, -0.97, 0, 1, -0, 0.97, -0, -0.22),
-    ["Delta"] = CFrame.new(2264.97, 68.31, -3745.31, -0.70, -0, -0.71, 0, 1, -0, 0.71, -0, -0.70),
-    ["Echo"] = CFrame.new(2867.60, 67.62, -2731.19, -0.90, -0, -0.43, -0, 1, -0, 0.43, 0, -0.90)
-}
+-- ── AutoFarm tab ─────────────────────────────────────────────
+local farmTab     = Window:AddTab({ Title = "AutoFarm", Icon = "bot" })
+local farmSection = farmTab:AddSection("AutoFarm")
 
-
-
-locations = {
-    ["Oil Rig 1"] = CFrame.new(1705.62, 120.95, 3778.51, -1, 0, -0, 0, 1, 0, 0, 0, -1) + Vector3.new(0,8,0),
-    ["Oil Rig 2"] = CFrame.new(-1937.25, 120.95, -3697.70, 1, -0, 0.04, 0, 1, 0, -0.04, -0, 1),
-    ["Oil Warehouse"] = CFrame.new(-1209.48, 72.70, -879.73, 0.75, 0, -0.67, -0, 1, -0, 0.67, 0, 0.75),
-    ["Base"] = getTycoon():FindFirstChild("MainPart").CFrame + Vector3.new(0, 5, 0),
-    ["Oil Deposit"] = oilDeposits[getTycoon().Name],
-    ["Control Point"] = CFrame.new(-502.28, 177.04, -1029.86, -0.94, -0, 0.35, -0, 1, 0, -0.35, 0, -0.94)
-
-}
-
-
-UI.AddTab("War Tycoon", function(tab)
-    local autoFarm = tab:Section("AutoFarm", "Left")
-    autoFarm:Toggle("autobuy_on", "AutoBuy", function(state)
-        print("AutoBuy: " .. tostring(state))
+farmSection:AddToggle({
+    Id       = "AutoBuy",
+    Title    = "AutoBuy",
+    Default  = false,
+    Keybind  = "F1",
+    Callback = function(state)
         autoBuyRunning = state
-    end)
-    autoFarm:Keybind("enabled_kb", 0x70, "toggle")
+    end,
+})
 
-    autoFarm:Button("Get All Barrels", function() 
+farmSection:AddButton({
+    Title    = "Get All Barrels",
+    Callback = function()
         task.spawn(getAllBarrels)
-    end)
+    end,
+})
 
-    local teleports = tab:Section("Teleports", "Right")
-    teleports:Button("Oil Rig 1", function()
-        print("Teleporting to Oil 1...")
-        teleportTo(locations["Oil Rig 1"])
-    end)
-    teleports:Button("Oil Rig 2", function()
-        print("Teleporting to Oil 2...")
-        teleportTo(locations["Oil Rig 2"])
-    end)
-    teleports:Button("Oil Warehouse", function()
-        print("Teleporting to Oil 3...")
-        teleportTo(locations["Oil Warehouse"])
-    end)
-    teleports:Button("Base", function()
-        print("Teleporting to Base..." .. getTycoon().Name)
-        teleportTo(locations["Base"])
-    end)
-    teleports:Button("Oil Deposit", function()
-        print("Teleporting to Oil Deposit...")
-        teleportTo(locations["Oil Deposit"])
-    end)
-    teleports:Button("Control Point", function()
-        print("Teleporting to Control Point...")
-        teleportTo(locations["Control Point"])
-    
-    end)
+-- ── Teleports tab ─────────────────────────────────────────────
+local tpTab     = Window:AddTab({ Title = "Teleports", Icon = "map-pin" })
+local tpSection = tpTab:AddSection("Locations")
 
+local function addTeleportButton(label, locationKey)
+    tpSection:AddButton({
+        Title    = label,
+        Callback = function()
+            if staticLocations[locationKey] then
+                teleportTo(staticLocations[locationKey])
+                return
+            end
+            if locationKey == "Base" then
+                local tycoon = getTycoon()
+                local mainPart = tycoon and tycoon:FindFirstChild("MainPart")
+                if mainPart then teleportTo(mainPart.CFrame + Vector3.new(0, 5, 0)) end
+            elseif locationKey == "Oil Deposit" then
+                local tycoon = getTycoon()
+                if tycoon and oilDeposits[tycoon.Name] then
+                    teleportTo(oilDeposits[tycoon.Name])
+                end
+            end
+        end,
+    })
+end
 
-end)
+addTeleportButton("Oil Rig 1",     "Oil Rig 1")
+addTeleportButton("Oil Rig 2",     "Oil Rig 2")
+addTeleportButton("Oil Warehouse", "Oil Warehouse")
+addTeleportButton("Base",          "Base")
+addTeleportButton("Oil Deposit",   "Oil Deposit")
+addTeleportButton("Control Point", "Control Point")
 
--- spawn(function()
---     while true do
---         wait(0.1)
---         if autoBuyRunning and not autoBuyActive then
---             autoBuyActive = true
---             print("Running auto-buy cycle...")
---             autoBuyUpgrades()
---             collectMoney()
---             autoBuyActive = false
---         end
---     end
--- end)
+-- ── Restrictions tab ─────────────────────────────────────────
+-- Generated automatically from restrictionCategories at the top of the script.
+-- ON = autobuy skips this button | OFF = autobuy will buy it
+local restrictTab = Window:AddTab({ Title = "Restrictions", Icon = "shield-off" })
 
-spawn(function()
-    while true do
+local toggleIndex = 0
+for _, category in ipairs(restrictionCategories) do
+    local section = restrictTab:AddSection(category.Category)
+    for _, entry in ipairs(category.Buttons) do
+        toggleIndex += 1
+        section:AddToggle({
+            Id          = "restrict_" .. toggleIndex,
+            Title       = entry.Name,
+            Description = "ON = skip  |  OFF = allow purchase",
+            Default     = entry.Default,
+            Callback    = function(state)
+                restrictedButtons[entry.Name] = state
+            end,
+        })
+    end
+end
+
+-- ── Main auto-buy loop ───────────────────────────────────────
+task.spawn(function()
+    while not Library.Unloaded do
         task.wait(0.1)
-
         if autoBuyRunning and not autoBuyActive then
             autoBuyActive = true
-
-            local success, err = pcall(function()
-                print("Running auto-buy cycle...")
+            local ok, err = pcall(function()
                 autoBuyUpgrades()
                 collectMoney()
             end)
-
-            if not success then
-                warn(err)
-            end
-
+            if not ok then warn("[AutoBuy] Error:", err) end
             autoBuyActive = false
         end
     end
 end)
 
-spawn(function()
-    while true do
-        wait(0.1)
-        for i,v in ipairs(playersService:GetPlayers()) do
-            if not v then
-                continue
-            end
-            if v.AdminRank.Value ~= 0 then
-                print("Admin detected: " .. v.Name)
-                notify("turn off everything cuz there's an admin", "Admin detected!", 60)
+-- ── Admin detection loop ─────────────────────────────────────
+task.spawn(function()
+    while not Library.Unloaded do
+        task.wait(0.1)
+        for _, player in ipairs(Players:GetPlayers()) do
+            local rank = player:FindFirstChild("AdminRank")
+            if rank and rank.Value ~= 0 then
+                warn("[Admin] Detected:", player.Name)
+                Library:Notify({
+                    Title    = "Admin Detected!",
+                    Content  = "Turn off everything — " .. player.Name .. " is present!",
+                    Duration = 60,
+                })
                 autoBuyRunning = false
                 break
             end
@@ -457,4 +426,4 @@ spawn(function()
     end
 end)
 
-notify("welcome to my script by originalzex", "Executed", 5)
+Library:Notify({ Title = "War Tycoon", Content = "Welcome! Script by originalzex", Duration = 5 })
