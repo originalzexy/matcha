@@ -9,30 +9,68 @@ local localPlayer = Players.LocalPlayer
 
 -- ── State ────────────────────────────────────────────────────
 local autoBuyRunning = false
-local autoBuyActive  = false
+
+-- ── Task Queue ───────────────────────────────────────────────
+-- A sequential task runner. Push named tasks onto it, then call :start().
+-- The queue runs each task one at a time and stops early if autoBuyRunning
+-- is turned off. Adding a new feature later (oil, airdrops, etc.) is just
+-- one farmQueue:push() call in the main loop below.
+local farmQueue = {
+    _tasks   = {},
+    _running = false,
+}
+
+function farmQueue:push(label, fn)
+    table.insert(self._tasks, { label = label, fn = fn })
+end
+
+function farmQueue:clear()
+    self._tasks  = {}
+    self._running = false
+end
+
+function farmQueue:isRunning()
+    return self._running
+end
+
+function farmQueue:start()
+    if self._running then return end
+    self._running = true
+    task.spawn(function()
+        while #self._tasks > 0 do
+            if not autoBuyRunning then break end
+            local item = table.remove(self._tasks, 1)
+            local ok, err = pcall(item.fn)
+            if not ok then
+                warn("[Queue:" .. item.label .. "] " .. tostring(err))
+            end
+        end
+        self:clear()
+    end)
+end
 
 -- ── Button restrictions config ────────────────────────────────
--- To add a new button, add a line inside the relevant category.
--- To add a new category, add a new block: { Category = "Name", Icon = "lucide-icon", Buttons = { ... } }
--- Default = true  → autobuy SKIPS this button (restricted)
--- Default = false → autobuy WILL buy this button (allowed)
+-- To add a button: { Name = "exact name in game", Default = true }
+-- To add a category: new block with Category, Icon, Buttons
+-- Default = true  → autobuy SKIPS this button
+-- Default = false → autobuy WILL buy this button
 local restrictionCategories = {
     {
         Category = "Helicopters",
         Icon     = "wind",
         Buttons  = {
-            { Name = "Mi28 Havoc",       Default = true },
-            { Name = "Invictus",         Default = true },
-            { Name = "Eurocopter Tiger", Default = true },
-            { Name = "KA-52 Alligator",  Default = true },
-            { Name = "AH-64 Apache",     Default = true },
-            { Name = "Super Stallion",   Default = true },
-            { Name = "UH-60 Black Hawk", Default = true },
-            { Name = "RAH-66 Comanche",  Default = true },
-            { Name = "Z-10",             Default = true },
-            { Name = "A129 Mangusta",    Default = true },
-            { Name = "Raider X",         Default = true },
-            { Name = "AH-1Z Viper",      Default = true },
+            { Name = "Mi28 Havoc",        Default = true },
+            { Name = "Invictus",          Default = true },
+            { Name = "Eurocopter Tiger",  Default = true },
+            { Name = "KA-52 Alligator",   Default = true },
+            { Name = "AH-64 Apache",      Default = true },
+            { Name = "Super Stallion",    Default = true },
+            { Name = "UH-60 Black Hawk",  Default = true },
+            { Name = "RAH-66 Comanche",   Default = true },
+            { Name = "Z-10",              Default = true },
+            { Name = "A129 Mangusta",     Default = true },
+            { Name = "Raider X",          Default = true },
+            { Name = "AH-1Z Viper",       Default = true },
             { Name = "KA-50 Black Shark", Default = true },
         },
     },
@@ -72,8 +110,8 @@ local restrictionCategories = {
             { Name = "Pr. 206",              Default = true },
             { Name = "USS Independence",     Default = true },
             { Name = "Sigma-Class Corvette", Default = true },
-            { Name = "PACV-77 Windshear", Default = true },
-            { Name = "PACV-78 Rampage", Default = true },
+            { Name = "PACV-77 Windshear",    Default = true },
+            { Name = "PACV-78 Rampage",      Default = true },
         },
     },
     {
@@ -95,19 +133,34 @@ local restrictionCategories = {
             { Name = "Barrett M82",            Default = true },
             { Name = "KSG 12 Giver",           Default = true },
             { Name = "PP19 Bizon Giver",       Default = true },
+            { Name = "Hovercraft C4 Giver",    Default = true },
+            { Name = "Hovercraft QBZ-95 Giver", Default = true },
+            { Name = "Hovercraft QJB-LMG Giver", Default = true },
+            { Name = "AVH Reaper",             Default = true },
+            { Name = "M1918 BAR Giver" , Default = true },
+            { Name = "M14 Rifle Giver", Default = true },
+            { Name = "M1903 Springfield Giver",             Default = true },
         },
     },
     {
         Category = "Misc",
         Icon     = "box",
         Buttons  = {
-            { Name = "2x Health Armor",  Default = true },
+            { Name = "2x Health Armor",   Default = true },
             { Name = "KizmoTek Clothing", Default = true },
+            { Name = "WW2 US Army Pack",  Default = true },
+            { Name = "Base Shield",       Default = true },
+            { Name = "Vietnam Armor",  Default = true },
+            { Name = "Vietnam Clothing",       Default = true },
         },
     },
 }
 
--- Build the live lookup table from the config above
+
+
+
+
+-- Build live lookup table from the config above
 local restrictedButtons = {}
 for _, category in ipairs(restrictionCategories) do
     for _, entry in ipairs(category.Buttons) do
@@ -122,6 +175,7 @@ local oilDeposits = {
     ["Charlie"] = CFrame.new(1107.75,  67.35, -4643.60, -0.22, -0, -0.97,  0, 1, -0, 0.97, -0, -0.22),
     ["Delta"]   = CFrame.new(2264.97,  68.31, -3745.31, -0.70, -0, -0.71,  0, 1, -0, 0.71, -0, -0.70),
     ["Echo"]    = CFrame.new(2867.60,  67.62, -2731.19, -0.90, -0, -0.43, -0, 1, -0, 0.43,  0, -0.90),
+    ["Hotel"]   = CFrame.new(3221.24,  66.51,   904.23, -0.98, -0,  0.18, -0, 1,  0, -0.18, 0, -0.98),
 }
 
 -- ── Static locations ─────────────────────────────────────────
@@ -233,7 +287,7 @@ local function collectMoney()
     hrp.Position = savedPos
 end
 
--- ── Auto-buy ─────────────────────────────────────────────────
+-- ── Auto-buy (cheapest → most expensive) ─────────────────────
 local function autoBuyUpgrades()
     local tycoon = getTycoon()
     if not tycoon then return end
@@ -243,14 +297,16 @@ local function autoBuyUpgrades()
 
     local playerRebirths = getRebirths()
 
+    -- Medbay Start gets priority before the sorted pass
     local medbayStart = unpurchasedButtons:FindFirstChild("Medbay Start")
     if medbayStart then
         teleportToButton(medbayStart)
         task.wait(0.5)
     end
 
+    -- Collect all eligible buttons and their prices
+    local eligible = {}
     for _, button in ipairs(unpurchasedButtons:GetChildren()) do
-        if not autoBuyRunning then break end
         if not button:IsA("Model") then continue end
         if button.Name:lower():find("gamepass") then continue end
         if restrictedButtons[button.Name] then continue end
@@ -258,48 +314,99 @@ local function autoBuyUpgrades()
         local rebirthReq = getRebirthRequirement(button)
         if playerRebirths < rebirthReq then continue end
 
-        local price = getButtonPrice(button)
-        if price then
-            if getCash() >= price and teleportToButton(button) then
+        local price = getButtonPrice(button) or 0
+        table.insert(eligible, { button = button, price = price })
+    end
+
+    -- Sort cheapest to most expensive (free buttons = 0 go first)
+    table.sort(eligible, function(a, b)
+        return a.price < b.price
+    end)
+
+    -- Buy in sorted order
+    for _, item in ipairs(eligible) do
+        if not autoBuyRunning then break end
+        if item.price > 0 then
+            if getCash() >= item.price and teleportToButton(item.button) then
+                print("Buying ", item.price)
                 task.wait(1)
             end
         else
-            teleportToButton(button)
+            teleportToButton(item.button)
         end
     end
 end
 
 -- ── Barrel collection ────────────────────────────────────────
+-- VK codes: W=0x57  A=0x41  S=0x53  D=0x44  Space=0x20
+local MOVEMENT_KEYS = { 0x57, 0x41, 0x53, 0x44, 0x20 }
+
+local function isMovementPressed()
+    for _, vk in ipairs(MOVEMENT_KEYS) do
+        if iskeypressed(vk) then return true end
+    end
+    return false
+end
+
+-- Waits up to `seconds`, polling every 0.1s.
+-- Returns true if movement was detected (cancelled), false if elapsed normally.
+local function waitOrCancel(seconds)
+    local elapsed = 0
+    while elapsed < seconds do
+        if isMovementPressed() then 
+            notify("Oil Cancelled", "Cancelled", 5)
+            return true 
+        end
+        task.wait(0.1)
+        elapsed += 0.1
+    end
+    return false
+end
+
 local function getAllBarrels()
     task.wait(1)
     local tycoon = getTycoon()
     if not tycoon then return end
 
     if not oilDeposits[tycoon.Name] then
-        Library:Notify({ Title = "Error", Content = "This base is not supported yet.", Duration = 5 })
+        notify("This base is not supported yet.", "Error", 5)
         return
     end
 
     local deposit = oilDeposits[tycoon.Name]
 
+    -- Returns true if cancelled by movement input
     local function visitRigAndDeposit(rigLocation)
         teleportTo(rigLocation)
-        task.wait(0.5)
-        keypress("0x45")
-        task.wait(2)
-        keyrelease("0x45")
+        if waitOrCancel(0.5) then return true end
+
+        keypress(0x45)
+        if waitOrCancel(2) then keyrelease(0x45) return true end
+        keyrelease(0x45)
 
         teleportTo(deposit)
-        task.wait(0.5)
-        keypress("0x45")
-        task.wait(2)
-        keyrelease("0x45")
-        task.wait(8)
+        if waitOrCancel(0.5) then return true end
+
+        keypress(0x45)
+        if waitOrCancel(2) then keyrelease(0x45) return true end
+        keyrelease(0x45)
+
+        if waitOrCancel(8) then return true end
+        return false
     end
 
-    visitRigAndDeposit(staticLocations["Oil Rig 1"])
-    visitRigAndDeposit(staticLocations["Oil Rig 2"])
-    visitRigAndDeposit(staticLocations["Oil Warehouse"])
+    local rigs = {
+        staticLocations["Oil Rig 1"],
+        staticLocations["Oil Rig 2"],
+        staticLocations["Oil Warehouse"],
+    }
+
+    for _, loc in ipairs(rigs) do
+        if visitRigAndDeposit(loc) then
+            notify("Barrel collection cancelled — movement detected.", "Cancelled", 3)
+            return
+        end
+    end
 end
 
 -- ── UI ───────────────────────────────────────────────────────
@@ -325,12 +432,14 @@ farmSection:AddToggle({
     Keybind  = "F1",
     Callback = function(state)
         autoBuyRunning = state
+        if not state then farmQueue:clear() end
     end,
 })
 
 farmSection:AddButton({
     Title    = "Get All Barrels",
     Callback = function()
+        notify("Getting all barrels, movement will cancel", "Barrels", 5)
         task.spawn(getAllBarrels)
     end,
 })
@@ -369,8 +478,6 @@ addTeleportButton("Oil Deposit",   "Oil Deposit")
 addTeleportButton("Control Point", "Control Point")
 
 -- ── Restrictions tab ─────────────────────────────────────────
--- Generated automatically from restrictionCategories at the top of the script.
--- ON = autobuy skips this button | OFF = autobuy will buy it
 local restrictTab = Window:AddTab({ Title = "Restrictions", Icon = "shield-off" })
 
 local toggleIndex = 0
@@ -390,18 +497,19 @@ for _, category in ipairs(restrictionCategories) do
     end
 end
 
--- ── Main auto-buy loop ───────────────────────────────────────
+-- ── Main farm loop ───────────────────────────────────────────
+-- To add a new feature to the cycle, push it here in the order you want.
+-- The queue runs each task sequentially and stops if autoBuyRunning is off.
 task.spawn(function()
     while not Library.Unloaded do
-        task.wait(0.1)
-        if autoBuyRunning and not autoBuyActive then
-            autoBuyActive = true
-            local ok, err = pcall(function()
-                autoBuyUpgrades()
-                collectMoney()
-            end)
-            if not ok then warn("[AutoBuy] Error:", err) end
-            autoBuyActive = false
+        task.wait(0.5)
+        if autoBuyRunning and not farmQueue:isRunning() then
+            farmQueue:push("AutoBuy",      autoBuyUpgrades)
+            farmQueue:push("CollectMoney", collectMoney)
+            -- Future tasks (uncomment when ready):
+            -- farmQueue:push("GetOil",      getAllBarrels)
+            -- farmQueue:push("GetAirdrops", getAirdrops)
+            farmQueue:start()
         end
     end
 end)
@@ -414,16 +522,13 @@ task.spawn(function()
             local rank = player:FindFirstChild("AdminRank")
             if rank and rank.Value ~= 0 then
                 warn("[Admin] Detected:", player.Name)
-                Library:Notify({
-                    Title    = "Admin Detected!",
-                    Content  = "Turn off everything — " .. player.Name .. " is present!",
-                    Duration = 60,
-                })
+                notify("Turn off everything — " .. player.Name .. " is present!", "Admin Detected!", 60)
                 autoBuyRunning = false
+                farmQueue:clear()
                 break
             end
         end
     end
 end)
 
-Library:Notify({ Title = "War Tycoon", Content = "Welcome! Script by originalzex", Duration = 5 })
+notify("Welcome! Script by originalzex", "War Tycoon", 5)
