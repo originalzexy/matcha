@@ -8,13 +8,10 @@ local Workspace = game:GetService("Workspace")
 local localPlayer = Players.LocalPlayer
 
 -- ── State ────────────────────────────────────────────────────
-local autoBuyRunning = false
+local autoBuyRunning     = false
+local autoRebirthRunning = false
 
 -- ── Task Queue ───────────────────────────────────────────────
--- A sequential task runner. Push named tasks onto it, then call :start().
--- The queue runs each task one at a time and stops early if autoBuyRunning
--- is turned off. Adding a new feature later (oil, airdrops, etc.) is just
--- one farmQueue:push() call in the main loop below.
 local farmQueue = {
     _tasks   = {},
     _running = false,
@@ -50,10 +47,6 @@ function farmQueue:start()
 end
 
 -- ── Button restrictions config ────────────────────────────────
--- To add a button: { Name = "exact name in game", Default = true }
--- To add a category: new block with Category, Icon, Buttons
--- Default = true  → autobuy SKIPS this button
--- Default = false → autobuy WILL buy this button
 local restrictionCategories = {
     {
         Category = "Helicopters",
@@ -137,9 +130,9 @@ local restrictionCategories = {
             { Name = "Hovercraft QBZ-95 Giver", Default = true },
             { Name = "Hovercraft QJB-LMG Giver", Default = true },
             { Name = "AVH Reaper",             Default = true },
-            { Name = "M1918 BAR Giver" , Default = true },
-            { Name = "M14 Rifle Giver", Default = true },
-            { Name = "M1903 Springfield Giver",             Default = true },
+            { Name = "M1918 BAR Giver" ,       Default = true },
+            { Name = "M14 Rifle Giver",        Default = true },
+            { Name = "M1903 Springfield Giver", Default = true },
         },
     },
     {
@@ -150,15 +143,11 @@ local restrictionCategories = {
             { Name = "KizmoTek Clothing", Default = true },
             { Name = "WW2 US Army Pack",  Default = true },
             { Name = "Base Shield",       Default = true },
-            { Name = "Vietnam Armor",  Default = true },
-            { Name = "Vietnam Clothing",       Default = true },
+            { Name = "Vietnam Armor",     Default = true },
+            { Name = "Vietnam Clothing",  Default = true },
         },
     },
 }
-
-
-
-
 
 -- Build live lookup table from the config above
 local restrictedButtons = {}
@@ -168,9 +157,34 @@ for _, category in ipairs(restrictionCategories) do
     end
 end
 
+-- ── Money-maker priority buttons ─────────────────────────────
+-- These are bought first (price low→high) before anything else.
+local moneyMakerButtons = {
+    ["Large Oil Extractor 1"] = true,
+    ["Large Oil Extractor 2"] = true,
+    ["Large Oil Extractor 3"] = true,
+    ["Large Oil Extractor 4"] = true,
+    ["Large Oil Extractor 5"] = true,
+    ["Mega Oil Extractor 1"]  = true,
+    ["Mega Oil Extractor 2"]  = true,
+    ["Mega Oil Extractor 3"]  = true,
+    ["Mega Oil Extractor 4"]  = true,
+    ["Mega Oil Extractor 5"]  = true,
+    ["Mega Oil Extractor 6"]  = true,
+    ["Oil Drill 1"]           = true,
+    ["Oil Drill 2"]           = true,
+    ["Oil Drill 3"]           = true,
+    ["WW2 Gas Pump"]          = true,
+    ["Oil Derrick 1"]         = true,
+    ["Oil Derrick 2"]         = true,
+    ["Base Solar Panels"]     = true,
+    ["Factory Solar Panels 1"] = true,
+    ["Factory Solar Panels 2"] = true,
+}
+
 -- ── Oil deposit CFrames (per tycoon name) ────────────────────
 local oilDeposits = {
-    ["Alpha"]   = CFrame.new(-879.42,  65.52, -4862.38,  0.28, -0, -0.96, -0, 1, -0, 0.96, 0,  0.28),
+    ["Alpha"]   = CFrame.new(-879.42,  65.52, -4862.38,  0.28, -0, -0.96, -0, 1, -0, 0.96, 0,  0.28) + Vector3.new(0,3, 0),
     ["Bravo"]   = CFrame.new( 103.88,  65.37, -4906.46, -0,   -0, -1,    -0, 1, -0, 1,    0, -0),
     ["Charlie"] = CFrame.new(1107.75,  67.35, -4643.60, -0.22, -0, -0.97,  0, 1, -0, 0.97, -0, -0.22),
     ["Delta"]   = CFrame.new(2264.97,  68.31, -3745.31, -0.70, -0, -0.71,  0, 1, -0, 0.71, -0, -0.70),
@@ -212,10 +226,38 @@ end
 local function getCash()     return getLeaderstat("Cash")     end
 local function getRebirths() return getLeaderstat("Rebirths") end
 
+-- ── Tycoon Completion Check ───────────────────────────────────
+local function isTycoonComplete()
+    local ok, result = pcall(function()
+        local gui = Players["originalzox"].PlayerGui
+        local bar = gui.UI.Container.HUD.Menu.HUD.Left.TycoonCompletion.Bar.BarProgressAmount
+        -- Handles both NumberValue/IntValue (.Value) and TextLabel (.Text)
+        local val = bar:IsA("GuiObject") and tonumber(bar.Text) or bar.Value
+        return val ~= nil and val >= 100
+    end)
+    return ok and result == true
+end
+
+local function stopIfComplete()
+    if isTycoonComplete() then
+        autoBuyRunning = false
+        farmQueue:clear()
+        notify("Tycoon 100% complete — AutoFarm stopped.", "Complete!", 10)
+        return true
+    end
+    return false
+end
+
+-- ── Rebirth Check ─────────────────────────────────────────────
+-- Returns true when the tycoon bar has reached 100% and a rebirth
+-- is available. The actual rebirth action is not implemented yet.
+local function canRebirth()
+    return isTycoonComplete()
+end
+
 -- ── Price parsing ────────────────────────────────────────────
 local function parsePrice(priceText)
     if type(priceText) ~= "string" or priceText:sub(1, 1) ~= "$" then return nil end
-    -- () discards gsub's substitution count so tonumber doesn't receive it as a base
     return tonumber((priceText:gsub("[$,]", "")))
 end
 
@@ -297,14 +339,12 @@ local function autoBuyUpgrades()
 
     local playerRebirths = getRebirths()
 
-    -- Medbay Start gets priority before the sorted pass
     local medbayStart = unpurchasedButtons:FindFirstChild("Medbay Start")
     if medbayStart then
         teleportToButton(medbayStart)
         task.wait(0.5)
     end
 
-    -- Collect all eligible buttons and their prices
     local eligible = {}
     for _, button in ipairs(unpurchasedButtons:GetChildren()) do
         if not button:IsA("Model") then continue end
@@ -318,14 +358,27 @@ local function autoBuyUpgrades()
         table.insert(eligible, { button = button, price = price })
     end
 
-    -- Sort cheapest to most expensive (free buttons = 0 go first)
-    table.sort(eligible, function(a, b)
-        return a.price < b.price
-    end)
-
-    -- Buy in sorted order
+    -- Split into money-makers and everything else, each sorted price low→high,
+    -- then concatenate so money-makers always go first.
+    local moneyMakers = {}
+    local theRest     = {}
     for _, item in ipairs(eligible) do
+        if moneyMakerButtons[item.button.Name] then
+            table.insert(moneyMakers, item)
+        else
+            table.insert(theRest, item)
+        end
+    end
+    table.sort(moneyMakers, function(a, b) return a.price < b.price end)
+    table.sort(theRest,     function(a, b) return a.price < b.price end)
+    for _, item in ipairs(theRest) do
+        table.insert(moneyMakers, item)
+    end
+    local sorted = moneyMakers  -- money-makers (low→high) then rest (low→high)
+
+    for _, item in ipairs(sorted) do
         if not autoBuyRunning then break end
+        if stopIfComplete() then return end  -- ← stop mid-loop if tycoon hits 100%
         if item.price > 0 then
             if getCash() >= item.price and teleportToButton(item.button) then
                 print("Buying ", item.price)
@@ -338,7 +391,6 @@ local function autoBuyUpgrades()
 end
 
 -- ── Barrel collection ────────────────────────────────────────
--- VK codes: W=0x57  A=0x41  S=0x53  D=0x44  Space=0x20
 local MOVEMENT_KEYS = { 0x57, 0x41, 0x53, 0x44, 0x20 }
 
 local function isMovementPressed()
@@ -348,14 +400,12 @@ local function isMovementPressed()
     return false
 end
 
--- Waits up to `seconds`, polling every 0.1s.
--- Returns true if movement was detected (cancelled), false if elapsed normally.
 local function waitOrCancel(seconds)
     local elapsed = 0
     while elapsed < seconds do
-        if isMovementPressed() then 
+        if isMovementPressed() then
             notify("Oil Cancelled", "Cancelled", 5)
-            return true 
+            return true
         end
         task.wait(0.1)
         elapsed += 0.1
@@ -375,7 +425,6 @@ local function getAllBarrels()
 
     local deposit = oilDeposits[tycoon.Name]
 
-    -- Returns true if cancelled by movement input
     local function visitRigAndDeposit(rigLocation)
         teleportTo(rigLocation)
         if waitOrCancel(0.5) then return true end
@@ -385,7 +434,7 @@ local function getAllBarrels()
         keyrelease(0x45)
 
         teleportTo(deposit)
-        if waitOrCancel(0.5) then return true end
+        if waitOrCancel(1) then return true end
 
         keypress(0x45)
         if waitOrCancel(2) then keyrelease(0x45) return true end
@@ -433,6 +482,18 @@ farmSection:AddToggle({
     Callback = function(state)
         autoBuyRunning = state
         if not state then farmQueue:clear() end
+    end,
+})
+
+farmSection:AddToggle({
+    Id       = "AutoRebirth",
+    Title    = "Auto Rebirth",
+    Default  = false,
+    Callback = function(state)
+        autoRebirthRunning = state
+        if state and canRebirth() then
+            notify("Ready to rebirth!", "Auto Rebirth", 5)
+        end
     end,
 })
 
@@ -498,18 +559,20 @@ for _, category in ipairs(restrictionCategories) do
 end
 
 -- ── Main farm loop ───────────────────────────────────────────
--- To add a new feature to the cycle, push it here in the order you want.
--- The queue runs each task sequentially and stops if autoBuyRunning is off.
 task.spawn(function()
     while not Library.Unloaded do
         task.wait(0.5)
         if autoBuyRunning and not farmQueue:isRunning() then
-            farmQueue:push("AutoBuy",      autoBuyUpgrades)
-            farmQueue:push("CollectMoney", collectMoney)
-            -- Future tasks (uncomment when ready):
-            -- farmQueue:push("GetOil",      getAllBarrels)
-            -- farmQueue:push("GetAirdrops", getAirdrops)
-            farmQueue:start()
+            if stopIfComplete() then  -- ← stop before queuing if already 100%
+                autoBuyRunning = false
+            else
+                farmQueue:push("AutoBuy",      autoBuyUpgrades)
+                farmQueue:push("CollectMoney", collectMoney)
+                -- Future tasks (uncomment when ready):
+                -- farmQueue:push("GetOil",      getAllBarrels)
+                -- farmQueue:push("GetAirdrops", getAirdrops)
+                farmQueue:start()
+            end
         end
     end
 end)
