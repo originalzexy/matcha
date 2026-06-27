@@ -8,8 +8,10 @@ local Workspace = game:GetService("Workspace")
 local localPlayer = Players.LocalPlayer
 
 -- ── State ────────────────────────────────────────────────────
-local autoBuyRunning     = false
-local autoRebirthRunning = false
+local autoBuyRunning        = false
+local autoRebirthRunning    = false
+local adminDetectionEnabled = false
+local doRebirth             -- forward declaration (defined after helpers)
 
 -- ── Task Queue ───────────────────────────────────────────────
 local farmQueue = {
@@ -89,6 +91,8 @@ local restrictionCategories = {
             { Name = "Gunship",            Default = true },
             { Name = "BTR-80",             Default = true },
             { Name = "VCAC Mephisto",      Default = true },
+            { Name = "AbramsX", Default = true},
+            { Name = "BMPT Terminator", Default = true}
         },
     },
     {
@@ -184,7 +188,7 @@ local moneyMakerButtons = {
 
 -- ── Oil deposit CFrames (per tycoon name) ────────────────────
 local oilDeposits = {
-    ["Alpha"]   = CFrame.new(-879.42,  65.52, -4862.38,  0.28, -0, -0.96, -0, 1, -0, 0.96, 0,  0.28) + Vector3.new(0,3, 0),
+    ["Alpha"]   = CFrame.new(-879.42,  65.52, -4862.38,  0.28, -0, -0.96, -0, 1, -0, 0.96, 0,  0.28),
     ["Bravo"]   = CFrame.new( 103.88,  65.37, -4906.46, -0,   -0, -1,    -0, 1, -0, 1,    0, -0),
     ["Charlie"] = CFrame.new(1107.75,  67.35, -4643.60, -0.22, -0, -0.97,  0, 1, -0, 0.97, -0, -0.22),
     ["Delta"]   = CFrame.new(2264.97,  68.31, -3745.31, -0.70, -0, -0.71,  0, 1, -0, 0.71, -0, -0.70),
@@ -242,17 +246,82 @@ local function stopIfComplete()
     if isTycoonComplete() then
         autoBuyRunning = false
         farmQueue:clear()
-        notify("Tycoon 100% complete — AutoFarm stopped.", "Complete!", 10)
+        if autoRebirthRunning then
+            notify("Tycoon 100% — attempting rebirth...", "Auto Rebirth", 6)
+            task.spawn(doRebirth)
+        else
+            notify("Tycoon 100% complete — AutoFarm stopped.", "Complete!", 10)
+        end
         return true
     end
     return false
 end
 
 -- ── Rebirth Check ─────────────────────────────────────────────
--- Returns true when the tycoon bar has reached 100% and a rebirth
--- is available. The actual rebirth action is not implemented yet.
 local function canRebirth()
     return isTycoonComplete()
+end
+
+-- ── Click helper ──────────────────────────────────────────────
+local function clickButton(btn)
+    mousemoveabs(
+        btn.AbsolutePosition.X + btn.AbsoluteSize.X / 2,
+        btn.AbsolutePosition.Y + btn.AbsoluteSize.Y / 2
+    )
+    task.wait()
+    mouse1click()
+end
+
+-- ── Auto Rebirth ──────────────────────────────────────────────
+doRebirth = function()
+    local gui      = localPlayer.PlayerGui
+    local rebirths = gui.UI.Container.HUD.Menu.HUD.Rebirths
+
+    local openBtn    = rebirths.RebirthButton.Rebirth
+    local confirmBtn = rebirths.RebirthMenu.Background.Body.Options.ConfirmButton
+    local hideToggle = rebirths.RebirthButton.Hide
+
+    local beforeRebirths = getRebirths()
+
+    local function rebirthed()
+        return getRebirths() > beforeRebirths
+    end
+
+    -- Attempt 1: confirm directly (menu may already be open)
+    clickButton(confirmBtn)
+    task.wait(5)
+    if rebirthed() then
+        notify("Rebirthed successfully!", "Auto Rebirth", 5)
+        autoBuyRunning = true
+        return
+    end
+
+    -- Attempt 2: open menu → confirm
+    clickButton(openBtn)
+    task.wait(1)
+    clickButton(confirmBtn)
+    task.wait(5)
+    if rebirthed() then
+        notify("Rebirthed successfully!", "Auto Rebirth", 5)
+        autoBuyRunning = true
+        return
+    end
+
+    -- Attempt 3: toggle visibility → open menu → confirm
+    clickButton(hideToggle)
+    task.wait(0.5)
+    clickButton(openBtn)
+    task.wait(1)
+    clickButton(confirmBtn)
+    task.wait(5)
+    if rebirthed() then
+        notify("Rebirthed successfully!", "Auto Rebirth", 5)
+        autoBuyRunning = true
+        return
+    end
+
+    print("[AutoRebirth] Failed to rebirth.")
+    notify("Failed to rebirth — manual action needed.", "Auto Rebirth", 10)
 end
 
 -- ── Price parsing ────────────────────────────────────────────
@@ -329,7 +398,7 @@ local function collectMoney()
     hrp.Position = savedPos
 end
 
--- ── Auto-buy (cheapest → most expensive) ─────────────────────
+-- ── Auto-buy: oil buttons first, regular buttons only when none left ──
 local function autoBuyUpgrades()
     local tycoon = getTycoon()
     if not tycoon then return end
@@ -339,13 +408,17 @@ local function autoBuyUpgrades()
 
     local playerRebirths = getRebirths()
 
+    -- Medbay Start gets priority before anything else
     local medbayStart = unpurchasedButtons:FindFirstChild("Medbay Start")
     if medbayStart then
         teleportToButton(medbayStart)
         task.wait(0.5)
     end
 
-    local eligible = {}
+    -- Split all eligible buttons into oil generators vs everything else
+    local oilButtons    = {}
+    local regularButtons = {}
+
     for _, button in ipairs(unpurchasedButtons:GetChildren()) do
         if not button:IsA("Model") then continue end
         if button.Name:lower():find("gamepass") then continue end
@@ -355,33 +428,47 @@ local function autoBuyUpgrades()
         if playerRebirths < rebirthReq then continue end
 
         local price = getButtonPrice(button) or 0
-        table.insert(eligible, { button = button, price = price })
-    end
+        local entry = { button = button, price = price }
 
-    -- Split into money-makers and everything else, each sorted price low→high,
-    -- then concatenate so money-makers always go first.
-    local moneyMakers = {}
-    local theRest     = {}
-    for _, item in ipairs(eligible) do
-        if moneyMakerButtons[item.button.Name] then
-            table.insert(moneyMakers, item)
+        if moneyMakerButtons[button.Name] then
+            table.insert(oilButtons, entry)
         else
-            table.insert(theRest, item)
+            table.insert(regularButtons, entry)
         end
     end
-    table.sort(moneyMakers, function(a, b) return a.price < b.price end)
-    table.sort(theRest,     function(a, b) return a.price < b.price end)
-    for _, item in ipairs(theRest) do
-        table.insert(moneyMakers, item)
-    end
-    local sorted = moneyMakers  -- money-makers (low→high) then rest (low→high)
 
-    for _, item in ipairs(sorted) do
+    table.sort(oilButtons,     function(a, b) return a.price < b.price end)
+    table.sort(regularButtons, function(a, b) return a.price < b.price end)
+
+    if #oilButtons > 0 then
+        -- Oil buttons still available — buy all we can afford, stop when we hit
+        -- one we can't afford (save up; never touch regular buttons while any remain)
+        for _, item in ipairs(oilButtons) do
+            if not autoBuyRunning then return end
+            if stopIfComplete() then return end
+            if getCash() >= item.price then
+                if item.price > 0 then
+                    teleportToButton(item.button)
+                    print("[Oil] Buying:", item.button.Name, item.price)
+                    task.wait(1)
+                else
+                    teleportToButton(item.button)
+                end
+            else
+                -- Can't afford the next cheapest oil button — wait for more cash
+                return
+            end
+        end
+        return  -- all oil buttons bought this pass; next cycle will re-evaluate
+    end
+
+    -- No oil buttons left — buy regular buttons cheapest → most expensive
+    for _, item in ipairs(regularButtons) do
         if not autoBuyRunning then break end
-        if stopIfComplete() then return end  -- ← stop mid-loop if tycoon hits 100%
+        if stopIfComplete() then return end
         if item.price > 0 then
             if getCash() >= item.price and teleportToButton(item.button) then
-                print("Buying ", item.price)
+                print("[Regular] Buying:", item.price)
                 task.wait(1)
             end
         else
@@ -434,7 +521,7 @@ local function getAllBarrels()
         keyrelease(0x45)
 
         teleportTo(deposit)
-        if waitOrCancel(1) then return true end
+        if waitOrCancel(0.5) then return true end
 
         keypress(0x45)
         if waitOrCancel(2) then keyrelease(0x45) return true end
@@ -558,6 +645,19 @@ for _, category in ipairs(restrictionCategories) do
     end
 end
 
+-- ── Misc tab ─────────────────────────────────────────────────
+local miscTab = Window:AddTab({ Title = "Misc", Icon = "settings" })
+
+local adminSection = miscTab:AddSection("Admin Detection")
+adminSection:AddToggle({
+    Id       = "AdminDetection",
+    Title    = "Admin Detection",
+    Default  = false,
+    Callback = function(state)
+        adminDetectionEnabled = state
+    end,
+})
+
 -- ── Main farm loop ───────────────────────────────────────────
 task.spawn(function()
     while not Library.Unloaded do
@@ -581,6 +681,7 @@ end)
 task.spawn(function()
     while not Library.Unloaded do
         task.wait(0.1)
+        if not adminDetectionEnabled then continue end
         for _, player in ipairs(Players:GetPlayers()) do
             local rank = player:FindFirstChild("AdminRank")
             if rank and rank.Value ~= 0 then
