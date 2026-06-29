@@ -11,6 +11,11 @@ local localPlayer = Players.LocalPlayer
 local autoBuyRunning        = false
 local autoRebirthRunning    = false
 local adminDetectionEnabled = false
+local infiniteAmmoRunning   = false
+local ignoreOps             = false
+local ignoreDailySpin       = false
+local ignoreGamepass        = false
+local ignoreSpinner         = false
 local doRebirth             -- forward declaration (defined after helpers)
 
 -- ── Task Queue ───────────────────────────────────────────────
@@ -91,8 +96,6 @@ local restrictionCategories = {
             { Name = "Gunship",            Default = true },
             { Name = "BTR-80",             Default = true },
             { Name = "VCAC Mephisto",      Default = true },
-            { Name = "AbramsX", Default = true},
-            { Name = "BMPT Terminator", Default = true}
         },
     },
     {
@@ -358,6 +361,40 @@ local function getRebirthRequirement(button)
     return 0
 end
 
+local function getPriceText(button)
+    local label = button:FindFirstChild("Neon")
+        and button.Neon:FindFirstChild("UI")
+        and button.Neon.UI:FindFirstChild("BillboardGui")
+        and button.Neon.UI.BillboardGui:FindFirstChild("Frame")
+        and button.Neon.UI.BillboardGui.Frame:FindFirstChild("Price")
+    return label and label.Text or nil
+end
+
+local function isOperationButton(button)
+    local text = getPriceText(button)
+    return text == "[OPERATION]"
+end
+
+local function isDailySpinButton(button)
+    local text = getPriceText(button)
+    return text == "Daily Spin"
+end
+
+local function isSpinnerButton(button)
+    local text = getPriceText(button)
+    return text == "[SPINNER]"
+end
+
+local function isGamepassButton(button)
+    local frame = button:FindFirstChild("Neon")
+        and button.Neon:FindFirstChild("UI")
+        and button.Neon.UI:FindFirstChild("BillboardGui")
+        and button.Neon.UI.BillboardGui:FindFirstChild("Frame")
+    if not frame then return false end
+    local priceFrame = frame:FindFirstChild("PriceFrame")
+    return priceFrame ~= nil and priceFrame:FindFirstChild("Robux") ~= nil
+end
+
 -- ── Movement ─────────────────────────────────────────────────
 local function teleportTo(location)
     local hrp = getHRP()
@@ -412,7 +449,7 @@ local function autoBuyUpgrades()
     local medbayStart = unpurchasedButtons:FindFirstChild("Medbay Start")
     if medbayStart then
         teleportToButton(medbayStart)
-        task.wait(0.5)
+        task.wait(1)
     end
 
     -- Split all eligible buttons into oil generators vs everything else
@@ -423,6 +460,10 @@ local function autoBuyUpgrades()
         if not button:IsA("Model") then continue end
         if button.Name:lower():find("gamepass") then continue end
         if restrictedButtons[button.Name] then continue end
+        if ignoreOps       and isOperationButton(button) then continue end
+        if ignoreDailySpin and isDailySpinButton(button)  then continue end
+        if ignoreGamepass  and isGamepassButton(button)   then continue end
+        if ignoreSpinner   and isSpinnerButton(button)    then continue end
 
         local rebirthReq = getRebirthRequirement(button)
         if playerRebirths < rebirthReq then continue end
@@ -453,6 +494,7 @@ local function autoBuyUpgrades()
                     task.wait(1)
                 else
                     teleportToButton(item.button)
+                    task.wait(1)
                 end
             else
                 -- Can't afford the next cheapest oil button — wait for more cash
@@ -473,6 +515,7 @@ local function autoBuyUpgrades()
             end
         else
             teleportToButton(item.button)
+            task.wait(1)
         end
     end
 end
@@ -628,12 +671,61 @@ addTeleportButton("Control Point", "Control Point")
 -- ── Restrictions tab ─────────────────────────────────────────
 local restrictTab = Window:AddTab({ Title = "Restrictions", Icon = "shield-off" })
 
+-- Holds every individual restriction toggle so the master can flip them all
+local allRestrictionToggles = {}
+
+local masterSection = restrictTab:AddSection("Master Control")
+masterSection:AddToggle({
+    Id          = "RestrictAll",
+    Title       = "Restrict All",
+    Default     = true,
+    Description = "ON = skip all  |  OFF = allow all purchases",
+    Callback    = function(state)
+        -- Update the live lookup table
+        for name in pairs(restrictedButtons) do
+            restrictedButtons[name] = state
+        end
+        -- Flip every individual toggle visually
+        for _, toggle in ipairs(allRestrictionToggles) do
+            toggle:SetValue(state)
+        end
+    end,
+})
+
+masterSection:AddToggle({
+    Id          = "IgnoreOps",
+    Title       = "Disable operation buttons",
+    Default     = false,
+    Callback    = function(state) ignoreOps = state end,
+})
+
+masterSection:AddToggle({
+    Id          = "IgnoreDailySpin",
+    Title       = "Disable daily spin",
+    Default     = false,
+    Callback    = function(state) ignoreDailySpin = state end,
+})
+
+masterSection:AddToggle({
+    Id          = "IgnoreGamepass",
+    Title       = "Disable gamepass buttons",
+    Default     = false,
+    Callback    = function(state) ignoreGamepass = state end,
+})
+
+masterSection:AddToggle({
+    Id          = "IgnoreSpinner",
+    Title       = "Disable spinner buttons",
+    Default     = false,
+    Callback    = function(state) ignoreSpinner = state end,
+})
+
 local toggleIndex = 0
 for _, category in ipairs(restrictionCategories) do
     local section = restrictTab:AddSection(category.Category)
     for _, entry in ipairs(category.Buttons) do
         toggleIndex += 1
-        section:AddToggle({
+        local toggle = section:AddToggle({
             Id          = "restrict_" .. toggleIndex,
             Title       = entry.Name,
             Description = "ON = skip  |  OFF = allow purchase",
@@ -642,8 +734,22 @@ for _, category in ipairs(restrictionCategories) do
                 restrictedButtons[entry.Name] = state
             end,
         })
+        table.insert(allRestrictionToggles, toggle)
     end
 end
+
+-- ── Gun Mods tab ──────────────────────────────────────────────
+local gunTab     = Window:AddTab({ Title = "Gun Mods", Icon = "crosshair" })
+local gunSection = gunTab:AddSection("Modifications")
+
+gunSection:AddToggle({
+    Id       = "InfiniteAmmo",
+    Title    = "Infinite ammo (not reversible)",
+    Default  = false,
+    Callback = function(state)
+        infiniteAmmoRunning = state
+    end,
+})
 
 -- ── Misc tab ─────────────────────────────────────────────────
 local miscTab = Window:AddTab({ Title = "Misc", Icon = "settings" })
@@ -691,6 +797,26 @@ task.spawn(function()
                 farmQueue:clear()
                 break
             end
+        end
+    end
+end)
+
+-- ── Infinite ammo loop ────────────────────────────────────────
+task.spawn(function()
+    while not Library.Unloaded do
+        task.wait(0.5)
+        if not infiniteAmmoRunning then continue end
+        local ok, err = pcall(function()
+            local gunsFolder = game.ReplicatedStorage.Configurations.ACS_Guns
+            for _, gun in ipairs(gunsFolder:GetChildren()) do
+                local ammoValue = gun:FindFirstChild("Ammo")
+                if ammoValue and ammoValue:IsA("NumberValue") then
+                    ammoValue.Value = 999999999
+                end
+            end
+        end)
+        if not ok then
+            warn("[InfiniteAmmo]", err)
         end
     end
 end)
