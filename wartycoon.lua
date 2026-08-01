@@ -87,19 +87,19 @@ local priorityList = {
     "Factory Solar Panels 1",
     "Factory Solar Panels 2",
     -- ── Bunker ────────────────────────────────────────────────
-    "Buy Bunker Start",           -- ⚠ may be "Buy Bunker Start - [$80,000]" in-game
+    "Buy Bunker Start - [$80,000]",
     "Bunker Path",
     "Bunker Oil Drill Room",
     "Bunker Oil Drill Paths",
     "Oil Drill Bunker 1",
     "Oil Drill Bunker 2",
     "Oil Drill Bunker 3",
-    "WW2 [4 Rebirths]",           -- ⚠ verify exact name
+    "WW2 [4 Rebirths]",
     "WW2 Bunker Entrance",
     "WW2 Bunker Path",
     "WW2 Gas Generator",
     -- ── Oil Derrick ───────────────────────────────────────────
-    "Helicopters [3 Rebirths]",   -- ⚠ verify exact name
+    "Helicopters [3 Rebirths]",
     "Oil Derrick Start",
     "Oil Derrick Tower",
     "Oil Derrick Oil",
@@ -108,13 +108,16 @@ local priorityList = {
     -- ── Base ──────────────────────────────────────────────────
     "Paths 2nd Floor",
     "Second Floor Lower Walls",
-    "Buy Upper Walls - [$8,000]",  -- ⚠ verify exact name
+    "Glass 1st Floor",
+    "Second Floor",
+    "Stairs 1",
+    "Buy Upper Walls - [$8,000]",
     "Glass 2nd Floor",
-    "Buy Third Floor - [$15,000]", -- ⚠ verify exact name
+    "Buy Third Floor - [$15,000]",
     "Stairs 2",
     "Third Floor Path",
     "Third Floor Lower Walls",
-    "Buy Upper Walls - [$22,000]", -- ⚠ verify exact name
+    "Buy Upper Walls - [$22,000]",
     "Glass 3rd Floor",
     "Third Floor Roof",
     "Base Solar Panels",
@@ -577,7 +580,7 @@ local function autoBuyUpgrades()
         if listComplete or not boughtAny then
             -- Priority list fully purchased — fall through to cheapest-first
             if listComplete then
-                notify("Priority list complete — buying cheapest first.", "Priority Buy", 5)
+                notifyNothingToBuy("Priority list complete — switching to cheapest first.")
             end
             buyEligibleCheapestFirst()
         end
