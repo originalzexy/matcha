@@ -16,7 +16,9 @@ local ignoreOps             = false
 local ignoreDailySpin       = false
 local ignoreGamepass        = false
 local ignoreSpinner         = false
-local doRebirth             -- forward declaration (defined after helpers)
+local priorityMode          = false
+local lastNothingNotify     = 0   -- throttle "nothing to buy" notify
+local doRebirth             -- forward declaration
 
 -- ── Task Queue ───────────────────────────────────────────────
 local farmQueue = {
@@ -29,7 +31,7 @@ function farmQueue:push(label, fn)
 end
 
 function farmQueue:clear()
-    self._tasks  = {}
+    self._tasks   = {}
     self._running = false
 end
 
@@ -52,6 +54,71 @@ function farmQueue:start()
         self:clear()
     end)
 end
+
+-- ── Priority buy list ─────────────────────────────────────────
+-- When Priority Mode is ON, autobuy walks this list top-to-bottom,
+-- buying each button as soon as it can afford it and skipping buttons
+-- that are already purchased. Nothing outside this list is ever bought.
+-- ⚠ Names must match the exact button Name in-game.
+--   Buttons whose in-game name includes a price (e.g. "Buy Third Floor - [$15,000]")
+--   need the full name here. Check with the debug print if unsure.
+local priorityList = {
+    -- ── Oil generators (buy in strict order) ──────────────────
+    "Large Oil Extractor 1",
+    "Large Oil Extractor 2",
+    "Large Oil Extractor 3",
+    "Large Oil Extractor 4",
+    "Large Oil Extractor 5",
+    "Mega Oil Extractor 1",
+    "Mega Oil Extractor 2",
+    "Mega Oil Extractor 3",
+    "Mega Oil Extractor 4",
+    "Mega Oil Extractor 5",
+    "Mega Oil Extractor 6",
+    -- ── Factory ───────────────────────────────────────────────
+    "Factory Foundation",
+    "Factory Walls 1",
+    "Factory Walls 2",
+    "Factory Exterior Framing",
+    "Factory Interior Framing 2",
+    "Factory Interior Framing 1",
+    "Factory Upperlevel",
+    "Factory Upperlevel Framing",
+    "Factory Solar Panels 1",
+    "Factory Solar Panels 2",
+    -- ── Bunker ────────────────────────────────────────────────
+    "Buy Bunker Start",           -- ⚠ may be "Buy Bunker Start - [$80,000]" in-game
+    "Bunker Path",
+    "Bunker Oil Drill Room",
+    "Bunker Oil Drill Paths",
+    "Oil Drill Bunker 1",
+    "Oil Drill Bunker 2",
+    "Oil Drill Bunker 3",
+    "WW2 [4 Rebirths]",           -- ⚠ verify exact name
+    "WW2 Bunker Entrance",
+    "WW2 Bunker Path",
+    "WW2 Gas Generator",
+    -- ── Oil Derrick ───────────────────────────────────────────
+    "Helicopters [3 Rebirths]",   -- ⚠ verify exact name
+    "Oil Derrick Start",
+    "Oil Derrick Tower",
+    "Oil Derrick Oil",
+    "Oil Derrick Machine 1",
+    "Oil Derrick Machine 2",
+    -- ── Base ──────────────────────────────────────────────────
+    "Paths 2nd Floor",
+    "Second Floor Lower Walls",
+    "Buy Upper Walls - [$8,000]",  -- ⚠ verify exact name
+    "Glass 2nd Floor",
+    "Buy Third Floor - [$15,000]", -- ⚠ verify exact name
+    "Stairs 2",
+    "Third Floor Path",
+    "Third Floor Lower Walls",
+    "Buy Upper Walls - [$22,000]", -- ⚠ verify exact name
+    "Glass 3rd Floor",
+    "Third Floor Roof",
+    "Base Solar Panels",
+}
 
 -- ── Button restrictions config ────────────────────────────────
 local restrictionCategories = {
@@ -118,28 +185,28 @@ local restrictionCategories = {
         Category = "Weapons",
         Icon     = "crosshair",
         Buttons  = {
-            { Name = "FAMAS Group Gun",        Default = true },
-            { Name = "FAL Heavy Giver",        Default = true },
-            { Name = "Explosive Sniper Giver", Default = true },
-            { Name = "Desert Eagle Giver",     Default = true },
-            { Name = "Javelin Giver",          Default = true },
-            { Name = "AWP Giver",              Default = true },
-            { Name = "Remington ACR Giver",    Default = true },
-            { Name = "Gas Grenade Giver",      Default = true },
-            { Name = "USP 45 Giver",           Default = true },
-            { Name = "AK12 Giver",             Default = true },
-            { Name = "Saiga-12k Giver",        Default = true },
-            { Name = "Barrett M82 Giver",      Default = true },
-            { Name = "Barrett M82",            Default = true },
-            { Name = "KSG 12 Giver",           Default = true },
-            { Name = "PP19 Bizon Giver",       Default = true },
-            { Name = "Hovercraft C4 Giver",    Default = true },
-            { Name = "Hovercraft QBZ-95 Giver", Default = true },
-            { Name = "Hovercraft QJB-LMG Giver", Default = true },
-            { Name = "AVH Reaper",             Default = true },
-            { Name = "M1918 BAR Giver" ,       Default = true },
-            { Name = "M14 Rifle Giver",        Default = true },
-            { Name = "M1903 Springfield Giver", Default = true },
+            { Name = "FAMAS Group Gun",           Default = true },
+            { Name = "FAL Heavy Giver",            Default = true },
+            { Name = "Explosive Sniper Giver",     Default = true },
+            { Name = "Desert Eagle Giver",         Default = true },
+            { Name = "Javelin Giver",              Default = true },
+            { Name = "AWP Giver",                  Default = true },
+            { Name = "Remington ACR Giver",        Default = true },
+            { Name = "Gas Grenade Giver",          Default = true },
+            { Name = "USP 45 Giver",               Default = true },
+            { Name = "AK12 Giver",                 Default = true },
+            { Name = "Saiga-12k Giver",            Default = true },
+            { Name = "Barrett M82 Giver",          Default = true },
+            { Name = "Barrett M82",                Default = true },
+            { Name = "KSG 12 Giver",               Default = true },
+            { Name = "PP19 Bizon Giver",           Default = true },
+            { Name = "Hovercraft C4 Giver",        Default = true },
+            { Name = "Hovercraft QBZ-95 Giver",    Default = true },
+            { Name = "Hovercraft QJB-LMG Giver",   Default = true },
+            { Name = "AVH Reaper",                 Default = true },
+            { Name = "M1918 BAR Giver",            Default = true },
+            { Name = "M14 Rifle Giver",            Default = true },
+            { Name = "M1903 Springfield Giver",    Default = true },
         },
     },
     {
@@ -163,31 +230,6 @@ for _, category in ipairs(restrictionCategories) do
         restrictedButtons[entry.Name] = entry.Default
     end
 end
-
--- ── Money-maker priority buttons ─────────────────────────────
--- These are bought first (price low→high) before anything else.
-local moneyMakerButtons = {
-    ["Large Oil Extractor 1"] = true,
-    ["Large Oil Extractor 2"] = true,
-    ["Large Oil Extractor 3"] = true,
-    ["Large Oil Extractor 4"] = true,
-    ["Large Oil Extractor 5"] = true,
-    ["Mega Oil Extractor 1"]  = true,
-    ["Mega Oil Extractor 2"]  = true,
-    ["Mega Oil Extractor 3"]  = true,
-    ["Mega Oil Extractor 4"]  = true,
-    ["Mega Oil Extractor 5"]  = true,
-    ["Mega Oil Extractor 6"]  = true,
-    ["Oil Drill 1"]           = true,
-    ["Oil Drill 2"]           = true,
-    ["Oil Drill 3"]           = true,
-    ["WW2 Gas Pump"]          = true,
-    ["Oil Derrick 1"]         = true,
-    ["Oil Derrick 2"]         = true,
-    ["Base Solar Panels"]     = true,
-    ["Factory Solar Panels 1"] = true,
-    ["Factory Solar Panels 2"] = true,
-}
 
 -- ── Oil deposit CFrames (per tycoon name) ────────────────────
 local oilDeposits = {
@@ -233,12 +275,11 @@ end
 local function getCash()     return getLeaderstat("Cash")     end
 local function getRebirths() return getLeaderstat("Rebirths") end
 
--- ── Tycoon Completion Check ───────────────────────────────────
+-- ── Tycoon completion check ───────────────────────────────────
 local function isTycoonComplete()
     local ok, result = pcall(function()
         local gui = Players["originalzox"].PlayerGui
         local bar = gui.UI.Container.HUD.Menu.HUD.Left.TycoonCompletion.Bar.BarProgressAmount
-        -- Handles both NumberValue/IntValue (.Value) and TextLabel (.Text)
         local val = bar:IsA("GuiObject") and tonumber(bar.Text) or bar.Value
         return val ~= nil and val >= 100
     end)
@@ -260,7 +301,6 @@ local function stopIfComplete()
     return false
 end
 
--- ── Rebirth Check ─────────────────────────────────────────────
 local function canRebirth()
     return isTycoonComplete()
 end
@@ -275,7 +315,7 @@ local function clickButton(btn)
     mouse1click()
 end
 
--- ── Auto Rebirth ──────────────────────────────────────────────
+-- ── Auto rebirth ──────────────────────────────────────────────
 doRebirth = function()
     local gui      = localPlayer.PlayerGui
     local rebirths = gui.UI.Container.HUD.Menu.HUD.Rebirths
@@ -285,45 +325,20 @@ doRebirth = function()
     local hideToggle = rebirths.RebirthButton.Hide
 
     local beforeRebirths = getRebirths()
+    local function rebirthed() return getRebirths() > beforeRebirths end
 
-    local function rebirthed()
-        return getRebirths() > beforeRebirths
-    end
+    clickButton(confirmBtn) task.wait(5)
+    if rebirthed() then notify("Rebirthed successfully!", "Auto Rebirth", 5) autoBuyRunning = true return end
 
-    -- Attempt 1: confirm directly (menu may already be open)
-    clickButton(confirmBtn)
-    task.wait(5)
-    if rebirthed() then
-        notify("Rebirthed successfully!", "Auto Rebirth", 5)
-        autoBuyRunning = true
-        return
-    end
+    clickButton(openBtn) task.wait(1)
+    clickButton(confirmBtn) task.wait(5)
+    if rebirthed() then notify("Rebirthed successfully!", "Auto Rebirth", 5) autoBuyRunning = true return end
 
-    -- Attempt 2: open menu → confirm
-    clickButton(openBtn)
-    task.wait(1)
-    clickButton(confirmBtn)
-    task.wait(5)
-    if rebirthed() then
-        notify("Rebirthed successfully!", "Auto Rebirth", 5)
-        autoBuyRunning = true
-        return
-    end
+    clickButton(hideToggle) task.wait(0.5)
+    clickButton(openBtn) task.wait(1)
+    clickButton(confirmBtn) task.wait(5)
+    if rebirthed() then notify("Rebirthed successfully!", "Auto Rebirth", 5) autoBuyRunning = true return end
 
-    -- Attempt 3: toggle visibility → open menu → confirm
-    clickButton(hideToggle)
-    task.wait(0.5)
-    clickButton(openBtn)
-    task.wait(1)
-    clickButton(confirmBtn)
-    task.wait(5)
-    if rebirthed() then
-        notify("Rebirthed successfully!", "Auto Rebirth", 5)
-        autoBuyRunning = true
-        return
-    end
-
-    print("[AutoRebirth] Failed to rebirth.")
     notify("Failed to rebirth — manual action needed.", "Auto Rebirth", 10)
 end
 
@@ -371,18 +386,15 @@ local function getPriceText(button)
 end
 
 local function isOperationButton(button)
-    local text = getPriceText(button)
-    return text == "[OPERATION]"
+    return getPriceText(button) == "[OPERATION]"
 end
 
 local function isDailySpinButton(button)
-    local text = getPriceText(button)
-    return text == "Daily Spin"
+    return getPriceText(button) == "Daily Spin"
 end
 
 local function isSpinnerButton(button)
-    local text = getPriceText(button)
-    return text == "[SPINNER]"
+    return getPriceText(button) == "[SPINNER]"
 end
 
 local function isGamepassButton(button)
@@ -435,7 +447,16 @@ local function collectMoney()
     hrp.Position = savedPos
 end
 
--- ── Auto-buy: oil buttons first, regular buttons only when none left ──
+-- ── Auto-buy ─────────────────────────────────────────────────
+local function notifyNothingToBuy(msg)
+    -- Throttle to once every 30 seconds so the loop doesn't spam
+    local now = tick()
+    if now - lastNothingNotify >= 30 then
+        lastNothingNotify = now
+        notify(msg, "AutoBuy", 6)
+    end
+end
+
 local function autoBuyUpgrades()
     local tycoon = getTycoon()
     if not tycoon then return end
@@ -445,78 +466,125 @@ local function autoBuyUpgrades()
 
     local playerRebirths = getRebirths()
 
-    -- Medbay Start gets priority before anything else
+    -- Medbay Start always goes first regardless of mode
     local medbayStart = unpurchasedButtons:FindFirstChild("Medbay Start")
     if medbayStart then
         teleportToButton(medbayStart)
         task.wait(1)
     end
 
-    -- Split all eligible buttons into oil generators vs everything else
-    local oilButtons    = {}
-    local regularButtons = {}
+    -- ── Shared helper: build eligible list and buy cheapest→expensive ──────
+    local function buyEligibleCheapestFirst()
+        local eligible = {}
 
-    for _, button in ipairs(unpurchasedButtons:GetChildren()) do
-        if not button:IsA("Model") then continue end
-        if button.Name:lower():find("gamepass") then continue end
-        if restrictedButtons[button.Name] then continue end
-        if ignoreOps       and isOperationButton(button) then continue end
-        if ignoreDailySpin and isDailySpinButton(button)  then continue end
-        if ignoreGamepass  and isGamepassButton(button)   then continue end
-        if ignoreSpinner   and isSpinnerButton(button)    then continue end
+        for _, button in ipairs(unpurchasedButtons:GetChildren()) do
+            if not button:IsA("Model") then continue end
+            if button.Name:lower():find("gamepass") then continue end
+            if restrictedButtons[button.Name] then continue end
+            if ignoreOps       and isOperationButton(button) then continue end
+            if ignoreDailySpin and isDailySpinButton(button)  then continue end
+            if ignoreGamepass  and isGamepassButton(button)   then continue end
+            if ignoreSpinner   and isSpinnerButton(button)    then continue end
 
-        local rebirthReq = getRebirthRequirement(button)
-        if playerRebirths < rebirthReq then continue end
+            local rebirthReq = getRebirthRequirement(button)
+            if playerRebirths < rebirthReq then continue end
 
-        local price = getButtonPrice(button) or 0
-        local entry = { button = button, price = price }
+            local price = getButtonPrice(button) or 0
+            table.insert(eligible, { button = button, price = price })
+        end
 
-        if moneyMakerButtons[button.Name] then
-            table.insert(oilButtons, entry)
-        else
-            table.insert(regularButtons, entry)
+        if #eligible == 0 then
+            notifyNothingToBuy("Nothing to buy right now.")
+            return
+        end
+
+        table.sort(eligible, function(a, b) return a.price < b.price end)
+
+        local boughtAny = false
+        for _, item in ipairs(eligible) do
+            if not autoBuyRunning then break end
+            if stopIfComplete() then return end
+            if item.price == 0 then
+                teleportToButton(item.button)
+                task.wait(1)
+                boughtAny = true
+            elseif getCash() >= item.price then
+                teleportToButton(item.button)
+                task.wait(1)
+                boughtAny = true
+            end
+        end
+
+        if not boughtAny then
+            local cheapest = eligible[1]
+            local needed = cheapest.price - getCash()
+            notifyNothingToBuy(
+                "Saving up — need $" .. needed ..
+                " more for " .. cheapest.button.Name .. "."
+            )
         end
     end
 
-    table.sort(oilButtons,     function(a, b) return a.price < b.price end)
-    table.sort(regularButtons, function(a, b) return a.price < b.price end)
+    if priorityMode then
+        -- ── PRIORITY MODE ─────────────────────────────────────
+        -- Walks priorityList top-to-bottom. Only buys buttons on the list.
+        -- Skips already-purchased buttons. Stops when it hits a button it
+        -- can't afford yet (saves up rather than jumping ahead).
+        -- Once the list is exhausted, falls through to cheapest-first.
 
-    if #oilButtons > 0 then
-        -- Oil buttons still available — buy all we can afford, stop when we hit
-        -- one we can't afford (save up; never touch regular buttons while any remain)
-        for _, item in ipairs(oilButtons) do
-            if not autoBuyRunning then return end
+        local unpurchasedMap = {}
+        for _, button in ipairs(unpurchasedButtons:GetChildren()) do
+            if button:IsA("Model") then
+                unpurchasedMap[button.Name] = button
+            end
+        end
+
+        local boughtAny    = false
+        local listComplete = true  -- assume complete until we find something still unpurchased
+
+        for _, name in ipairs(priorityList) do
+            if not autoBuyRunning then break end
             if stopIfComplete() then return end
-            if getCash() >= item.price then
-                if item.price > 0 then
-                    teleportToButton(item.button)
-                    print("[Oil] Buying:", item.button.Name, item.price)
-                    task.wait(1)
-                else
-                    teleportToButton(item.button)
-                    task.wait(1)
-                end
+
+            local button = unpurchasedMap[name]
+            if not button then continue end  -- already purchased
+
+            listComplete = false  -- at least one priority button still exists
+
+            local rebirthReq = getRebirthRequirement(button)
+            if playerRebirths < rebirthReq then continue end
+
+            local price = getButtonPrice(button) or 0
+            if price == 0 then
+                teleportToButton(button)
+                task.wait(1)
+                boughtAny = true
+            elseif getCash() >= price then
+                teleportToButton(button)
+                task.wait(1)
+                boughtAny = true
             else
-                -- Can't afford the next cheapest oil button — wait for more cash
+                -- Can't afford next priority button — notify and save up
+                local needed = price - getCash()
+                notifyNothingToBuy(
+                    "Saving up for " .. name ..
+                    " ($" .. price .. ") — need $" .. needed .. " more."
+                )
                 return
             end
         end
-        return  -- all oil buttons bought this pass; next cycle will re-evaluate
-    end
 
-    -- No oil buttons left — buy regular buttons cheapest → most expensive
-    for _, item in ipairs(regularButtons) do
-        if not autoBuyRunning then break end
-        if stopIfComplete() then return end
-        if item.price > 0 then
-            if getCash() >= item.price and teleportToButton(item.button) then
-                print("[Regular] Buying:", item.price)
-                task.wait(1)
+        if listComplete or not boughtAny then
+            -- Priority list fully purchased — fall through to cheapest-first
+            if listComplete then
+                notify("Priority list complete — buying cheapest first.", "Priority Buy", 5)
             end
-        else
-            teleportToButton(item.button)
-            task.wait(1)
+            buyEligibleCheapestFirst()
         end
+
+    else
+        -- ── NORMAL MODE ───────────────────────────────────────
+        buyEligibleCheapestFirst()
     end
 end
 
@@ -533,10 +601,7 @@ end
 local function waitOrCancel(seconds)
     local elapsed = 0
     while elapsed < seconds do
-        if isMovementPressed() then
-            notify("Oil Cancelled", "Cancelled", 5)
-            return true
-        end
+        if isMovementPressed() then return true end
         task.wait(0.1)
         elapsed += 0.1
     end
@@ -558,18 +623,14 @@ local function getAllBarrels()
     local function visitRigAndDeposit(rigLocation)
         teleportTo(rigLocation)
         if waitOrCancel(0.5) then return true end
-
         keypress(0x45)
         if waitOrCancel(2) then keyrelease(0x45) return true end
         keyrelease(0x45)
-
         teleportTo(deposit)
         if waitOrCancel(0.5) then return true end
-
         keypress(0x45)
         if waitOrCancel(2) then keyrelease(0x45) return true end
         keyrelease(0x45)
-
         if waitOrCancel(8) then return true end
         return false
     end
@@ -616,6 +677,21 @@ farmSection:AddToggle({
 })
 
 farmSection:AddToggle({
+    Id          = "PriorityMode",
+    Title       = "Priority Buy Mode",
+    Description = "ON = strict priority list only  |  OFF = cheapest first",
+    Default     = false,
+    Callback    = function(state)
+        priorityMode = state
+        if state then
+            notify("Priority mode ON — buying priority list only.", "Priority Buy", 4)
+        else
+            notify("Priority mode OFF — buying cheapest first.", "Priority Buy", 4)
+        end
+    end,
+})
+
+farmSection:AddToggle({
     Id       = "AutoRebirth",
     Title    = "Auto Rebirth",
     Default  = false,
@@ -630,7 +706,7 @@ farmSection:AddToggle({
 farmSection:AddButton({
     Title    = "Get All Barrels",
     Callback = function()
-        notify("Getting all barrels, movement will cancel", "Barrels", 5)
+        notify("Getting all barrels, movement will cancel.", "Barrels", 5)
         task.spawn(getAllBarrels)
     end,
 })
@@ -671,7 +747,6 @@ addTeleportButton("Control Point", "Control Point")
 -- ── Restrictions tab ─────────────────────────────────────────
 local restrictTab = Window:AddTab({ Title = "Restrictions", Icon = "shield-off" })
 
--- Holds every individual restriction toggle so the master can flip them all
 local allRestrictionToggles = {}
 
 local masterSection = restrictTab:AddSection("Master Control")
@@ -681,11 +756,9 @@ masterSection:AddToggle({
     Default     = true,
     Description = "ON = skip all  |  OFF = allow all purchases",
     Callback    = function(state)
-        -- Update the live lookup table
         for name in pairs(restrictedButtons) do
             restrictedButtons[name] = state
         end
-        -- Flip every individual toggle visually
         for _, toggle in ipairs(allRestrictionToggles) do
             toggle:SetValue(state)
         end
@@ -693,31 +766,31 @@ masterSection:AddToggle({
 })
 
 masterSection:AddToggle({
-    Id          = "IgnoreOps",
-    Title       = "Disable operation buttons",
-    Default     = false,
-    Callback    = function(state) ignoreOps = state end,
+    Id       = "IgnoreOps",
+    Title    = "Disable operation buttons",
+    Default  = false,
+    Callback = function(state) ignoreOps = state end,
 })
 
 masterSection:AddToggle({
-    Id          = "IgnoreDailySpin",
-    Title       = "Disable daily spin",
-    Default     = false,
-    Callback    = function(state) ignoreDailySpin = state end,
+    Id       = "IgnoreDailySpin",
+    Title    = "Disable daily spin",
+    Default  = false,
+    Callback = function(state) ignoreDailySpin = state end,
 })
 
 masterSection:AddToggle({
-    Id          = "IgnoreGamepass",
-    Title       = "Disable gamepass buttons",
-    Default     = false,
-    Callback    = function(state) ignoreGamepass = state end,
+    Id       = "IgnoreGamepass",
+    Title    = "Disable gamepass buttons",
+    Default  = false,
+    Callback = function(state) ignoreGamepass = state end,
 })
 
 masterSection:AddToggle({
-    Id          = "IgnoreSpinner",
-    Title       = "Disable spinner buttons",
-    Default     = false,
-    Callback    = function(state) ignoreSpinner = state end,
+    Id       = "IgnoreSpinner",
+    Title    = "Disable spinner buttons",
+    Default  = false,
+    Callback = function(state) ignoreSpinner = state end,
 })
 
 local toggleIndex = 0
@@ -752,9 +825,9 @@ gunSection:AddToggle({
 })
 
 -- ── Misc tab ─────────────────────────────────────────────────
-local miscTab = Window:AddTab({ Title = "Misc", Icon = "settings" })
-
+local miscTab    = Window:AddTab({ Title = "Misc", Icon = "settings" })
 local adminSection = miscTab:AddSection("Admin Detection")
+
 adminSection:AddToggle({
     Id       = "AdminDetection",
     Title    = "Admin Detection",
@@ -769,7 +842,7 @@ task.spawn(function()
     while not Library.Unloaded do
         task.wait(0.5)
         if autoBuyRunning and not farmQueue:isRunning() then
-            if stopIfComplete() then  -- ← stop before queuing if already 100%
+            if stopIfComplete() then
                 autoBuyRunning = false
             else
                 farmQueue:push("AutoBuy",      autoBuyUpgrades)
@@ -815,9 +888,7 @@ task.spawn(function()
                 end
             end
         end)
-        if not ok then
-            warn("[InfiniteAmmo]", err)
-        end
+        if not ok then warn("[InfiniteAmmo]", err) end
     end
 end)
 
