@@ -17,8 +17,27 @@
       Wanted.selfTest()             star + row on yourself
       Wanted.clearSelfTest()        release it
       Wanted.simulateDeadTarget()   diagnostic: proves cleanup survives a throw
-      Wanted.stop()                 remove every overlay (ALWAYS run this)
+      Wanted.stop()                 remove every overlay
+
+    NOTE: Drawing objects have no enumeration or bulk-clear API in Matcha.
+    Anything this script cannot explicitly stop stays on screen until the
+    Matcha session restarts. The registry below exists so that RE-PASTING this
+    script tears down the previous copy instead of orphaning it.
 ]]
+
+-- ============ TEARDOWN: kill prior generations BEFORE anything else ============
+-- 1) the immediately previous generation, via its global
+-- 2) every generation that registered itself in the shared registry
+do
+    if type(Wanted) == "table" and type(Wanted.stop) == "function" then
+        pcall(function() Wanted.stop() end)
+    end
+    local registry = rawget(_G, "__WantedOverlayStops")
+    if type(registry) == "table" then
+        for _, stopFn in ipairs(registry) do pcall(stopFn) end
+    end
+    rawset(_G, "__WantedOverlayStops", {})
+end
 
 local Players     = game:GetService("Players")
 local RunService  = game:GetService("RunService")
@@ -53,7 +72,7 @@ local Config = {
         MaxSize      = 90,
         SizeConstant = 2000,
         MoveEpsilon  = 0.5,
-        -- both label lines sit ABOVE the star so they read as one block
+        -- both label lines sit ABOVE the star so they read as one caption
         LabelDrop    = 24,
         LabelGap     = 15,
     },
@@ -73,6 +92,8 @@ local Colour = {
 }
 
 -- ============================== STAR GEOMETRY ==============================
+-- Drawing has no polygon primitive, so a 5-point star is fanned from 10
+-- triangles over pre-computed unit vertices (outer R=1, inner 0.382R, tip up).
 local STAR_POINT_COUNT = 10
 local starVertexX, starVertexY = {}, {}
 for index = 0, STAR_POINT_COUNT - 1 do
@@ -434,13 +455,25 @@ local function collect()
                 local rootPart = character and character:FindFirstChild("HumanoidRootPart")
                 local gotLevel, rawLevel = pcall(function() return wantedValue.Value end)
                 local level = (gotLevel and tonumber(rawLevel)) or 0
-                if level > 0 then
+
+                -- BOTH conditions required: the value must exist AND be above
+                -- zero. Presence alone would include players who are not wanted.
+                if level > 0 and rootPart ~= nil then
                     wantedRoster[#wantedRoster + 1] = {
                         player    = player,
                         userIdKey = tostring(player.UserId),
                         level     = level,
                         rootPart  = rootPart,
-                        headPart  = rootPart and character:FindFirstChild("Head") or nil,
+                        headPart  = character:FindFirstChild("Head"),
+                    }
+                elseif level > 0 then
+                    -- wanted, but body not streamed: board row yes, star no
+                    wantedRoster[#wantedRoster + 1] = {
+                        player    = player,
+                        userIdKey = tostring(player.UserId),
+                        level     = level,
+                        rootPart  = nil,
+                        headPart  = nil,
                     }
                 end
                 if not rootPart then streamedOutCount = streamedOutCount + 1 end
@@ -717,8 +750,13 @@ local function drawStars()
     local firstFailure = nil
 
     for index = 1, limit do
+        local entry = wantedRoster[index]
+        if entry == nil then
+            -- roster shrank between the length read and this iteration
+            break
+        end
         -- pcall on a top-level function: no closure allocated per target
-        local ok, didDraw = pcall(updateStarSlot, drawn + 1, wantedRoster[index])
+        local ok, didDraw = pcall(updateStarSlot, drawn + 1, entry)
         if ok then
             if didDraw then drawn = drawn + 1 end
         elseif firstFailure == nil then
@@ -913,4 +951,10 @@ function Wanted.stop()
         slot.banner:Remove()
     end
     print("Wanted.stop() ran -- board and stars removed")
+end
+
+-- Register this generation so the NEXT paste can tear it down.
+local registry = rawget(_G, "__WantedOverlayStops")
+if type(registry) == "table" then
+    table.insert(registry, function() Wanted.stop() end)
 end
