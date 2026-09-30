@@ -3,31 +3,31 @@
     A draggable wanted board plus red star markers over wanted players.
 
     Both features share ONE collector and ONE render connection.
-    Board  - red bar chart of the wanted list, hottest first, real display
-             names resolved through the Roblox API and cached to disk.
-    Stars  - see-through-walls red star over each wanted player who has a
-             streamed body on this client.
+      Board - red bar chart of the wanted list, hottest first, real display
+              names resolved via the Roblox API and cached to disk.
+      Stars - see-through-walls red star over each wanted player whose body
+              is actually replicated to this client.
 
-    CONTROLS / API
-      drag the board          press and hold anywhere on the panel
-      Wanted.getWanted()      { user, uid, disp, level }, hottest first
-      Wanted.debug()          display-name source breakdown
-      Wanted.stats()          wanted / streamedOut / drawn / err
-      Wanted.toggle()         hide or show the board
-      Wanted.move(dx, dy)     nudge the board
-      Wanted.selfTest()       star + row on yourself, to verify rendering
-      Wanted.clearSelfTest()   release it
-      Wanted.stop()           remove every overlay (ALWAYS run this)
+    API
+      Wanted.getWanted()            { user, uid, disp, level }, hottest first
+      Wanted.debug()                display-name source breakdown
+      Wanted.stats()                wanted / streamedOut / drawn / furthest
+      Wanted.toggle()               hide or show the board
+      Wanted.move(dx, dy)           nudge the board
+      Wanted.selfTest()             star + row on yourself
+      Wanted.clearSelfTest()        release it
+      Wanted.simulateDeadTarget()   diagnostic: proves cleanup survives a throw
+      Wanted.stop()                 remove every overlay (ALWAYS run this)
 ]]
 
-local Players      = game:GetService("Players")
-local RunService   = game:GetService("RunService")
-local LocalPlayer  = Players.LocalPlayer
-local sandbox      = getfenv and getfenv(1) or _G
+local Players     = game:GetService("Players")
+local RunService  = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local sandbox     = getfenv and getfenv(1) or _G
 
 -- ============================== CONFIG ==============================
 local Config = {
-    PollSeconds       = 2,
+    PollSeconds = 2,
     Board = {
         MaxRows      = 16,
         BarWidth     = 240,
@@ -45,11 +45,17 @@ local Config = {
     },
     Stars = {
         MaxTargets   = 24,
-        MaxDistance  = 900,
+        -- Effectively unlimited. Roblox streams character bodies by distance,
+        -- so a target with no HumanoidRootPart can never be drawn no matter
+        -- how large this is. The real limiter is streaming, not this cap.
+        MaxDistance  = 1e9,
         MinSize      = 18,
         MaxSize      = 90,
         SizeConstant = 2000,
         MoveEpsilon  = 0.5,
+        -- both label lines sit ABOVE the star so they read as one block
+        LabelDrop    = 24,
+        LabelGap     = 15,
     },
 }
 
@@ -66,7 +72,19 @@ local Colour = {
     TitleText     = Color3.fromRGB(255, 90, 90),
 }
 
+-- ============================== STAR GEOMETRY ==============================
+local STAR_POINT_COUNT = 10
+local starVertexX, starVertexY = {}, {}
+for index = 0, STAR_POINT_COUNT - 1 do
+    local angleRadians = math.rad(-90 + index * 36)
+    local radius = (index % 2 == 0) and 1 or 0.382
+    starVertexX[index + 1] = math.cos(angleRadians) * radius
+    starVertexY[index + 1] = math.sin(angleRadians) * radius
+end
+
 -- ============================== STATE ==============================
+-- Declared up front on purpose: a function that references a local declared
+-- LATER captures it as a nil global, which throws at first use.
 local isRunning         = true
 local isBoardVisible    = true
 local isDragging        = false
@@ -83,6 +101,7 @@ local totalPlayerCount  = 0
 local wantedCount       = 0
 local streamedOutCount  = 0
 local drawnStarCount    = 0
+local furthestDrawn     = 0
 local renderError       = nil
 
 local displayNameByUserId = {}
@@ -90,26 +109,31 @@ local lastNameAttemptAt  = {}
 local nameCacheDirty     = false
 local lastApiCallAt      = 0
 local lastNameSaveAt     = 0
+local nameSourceCounts   = { fromApi = 0, fromMdt = 0, fromUsername = 0, pendingRequests = 0 }
 
 local boardVersion     = 0
 local lastDrawnVersion = -1
-
-local visibleRowCount = 0
-local highestLevel    = 1
-local boardWidth      = 0
-local boardHeight     = 0
-local boardRows       = {}
+local visibleRowCount  = 0
+local highestLevel     = 1
+local boardWidth       = 0
+local boardHeight      = 0
+local boardRows        = {}
 for rowIndex = 1, Config.Board.MaxRows do
     boardRows[rowIndex] = {
         displayName = "", subtitle = "", offsetY = 0, barWidth = 0, isHot = false,
     }
 end
 
-local nameSourceCounts = {
-    fromApi = 0, fromMdt = 0, fromUsername = 0, pendingRequests = 0,
-}
+local currentCamera      = nil
+local viewportWidth      = 1920
+local viewportHeight     = 1080
+local minScreenX, maxScreenX = -300, 2220
+local minScreenY, maxScreenY = -300, 1380
+local maxDistanceSquared = Config.Stars.MaxDistance * Config.Stars.MaxDistance
 
--- ====================== DISPLAY NAME RESOLUTION ======================
+local mouseReference = nil
+
+-- ============================== DISPLAY NAMES ==============================
 -- Matcha has no JSONEncode/JSONDecode and Player.DisplayName is unreadable, so
 -- the request body is hand-built and the response is parsed with patterns.
 local function fetchDisplayNames(usernames)
@@ -124,8 +148,9 @@ local function fetchDisplayNames(usernames)
             batch[#batch + 1] = usernames[offset]
         end
         local quoted = {}
-        for index, username in ipairs(batch) do quoted[index] = '"' .. username .. '"' end
-
+        for index, username in ipairs(batch) do
+            quoted[index] = '"' .. username .. '"'
+        end
         local requestBody = '{"usernames":[' .. table.concat(quoted, ",")
             .. '],"excludeBannedUsers":false}'
         local succeeded, response = pcall(function()
@@ -203,14 +228,19 @@ local function loadFiles()
     local gotPosition, positionData = pcall(readfile, Config.Board.PositionFile)
     if gotPosition and type(positionData) == "string" then
         local x, y = positionData:match("^(%-?%d+),(%-?%d+)$")
-        if x then boardPositionX, boardPositionY = tonumber(x), tonumber(y) end
+        if x then
+            boardPositionX = tonumber(x)
+            boardPositionY = tonumber(y)
+        end
     end
 
     local gotNames, nameData = pcall(readfile, Config.Names.CacheFile)
     if gotNames and type(nameData) == "string" then
         for line in nameData:gmatch("[^\r\n]+") do
             local userId, display = line:match("^(%-?%d+)=(.+)$")
-            if userId and display then displayNameByUserId[userId] = display end
+            if userId and display then
+                displayNameByUserId[userId] = display
+            end
         end
     end
 end
@@ -242,11 +272,10 @@ local function clampBoardToViewport()
     boardPositionY = math.max(0, math.min(boardPositionY, screenHeight - boardHeight))
 end
 
--- ============================== MOUSE INPUT ==============================
+-- ============================== MOUSE ==============================
 -- getmouseposition and GetMouseLocation are absent in Matcha.
 -- LocalPlayer:GetMouse() is the working source; the resolver prefers the
 -- standard bindings if they are ever injected.
-local mouseReference
 do
     local gotMouse, mouse = pcall(function() return LocalPlayer:GetMouse() end)
     if gotMouse then mouseReference = mouse end
@@ -257,7 +286,9 @@ local function extractScreenPoint(value)
     local gotX, x = pcall(function() return value.X end)
     local gotY, y = pcall(function() return value.Y end)
     -- Vector2 is userdata in Matcha, so read fields, never type-check
-    if gotX and gotY and type(x) == "number" and type(y) == "number" then return x, y end
+    if gotX and gotY and type(x) == "number" and type(y) == "number" then
+        return x, y
+    end
     return nil
 end
 
@@ -287,18 +318,6 @@ local function isLeftMouseDown()
         if ok and pressed ~= nil then return pressed and true or false end
     end
     return false
-end
-
--- ============================== STAR GEOMETRY ==============================
--- Drawing has no polygon primitive, so a 5-point star is fanned from 10
--- triangles over pre-computed unit vertices (outer R=1, inner 0.382R, tip up).
-local STAR_POINT_COUNT = 10
-local starVertexX, starVertexY = {}, {}
-for index = 0, STAR_POINT_COUNT - 1 do
-    local angleRadians = math.rad(-90 + index * 36)
-    local radius = (index % 2 == 0) and 1 or 0.382
-    starVertexX[index + 1] = math.cos(angleRadians) * radius
-    starVertexY[index + 1] = math.sin(angleRadians) * radius
 end
 
 -- ============================== DRAWING POOLS ==============================
@@ -348,8 +367,10 @@ boardHintLabel.Visible = false
 local starPool = {}
 for index = 1, Config.Stars.MaxTargets do
     local slot = {
-        triangles = {}, stem = Drawing.new("Line"),
-        tag = Drawing.new("Text"), banner = Drawing.new("Text"),
+        triangles = {},
+        stem      = Drawing.new("Line"),
+        tag       = Drawing.new("Text"),
+        banner    = Drawing.new("Text"),
     }
     for pointIndex = 1, STAR_POINT_COUNT do
         local triangle = Drawing.new("Triangle")
@@ -360,15 +381,16 @@ for index = 1, Config.Stars.MaxTargets do
     slot.stem.Thickness, slot.stem.Color, slot.stem.Transparency = 1, Colour.StarBody, 0.3
     slot.stem.Visible, slot.stem.ZIndex = false, 4
     slot.tag.Size, slot.tag.Font, slot.tag.Center, slot.tag.Outline = 12, 1, true, true
-    slot.tag.Color, slot.tag.Visible, slot.tag.ZIndex = Colour.PrimaryText, false, 6
-    -- banner text is static, so it is never rewritten, only repositioned
+    slot.tag.Color, slot.tag.Visible, slot.tag.ZIndex = Colour.PrimaryText, false, 7
     slot.banner.Text, slot.banner.Size, slot.banner.Font = "WANTED", 13, 2
     slot.banner.Center, slot.banner.Outline, slot.banner.Color = true, true, Colour.StarLabel
-    slot.banner.Visible, slot.banner.ZIndex = false, 6
+    slot.banner.Visible, slot.banner.ZIndex = false, 7
     -- per-slot draw cache, so an unchanged target costs zero property writes
-    slot.wasVisible = false
+    slot.wasVisible    = false
     slot.drawnUserIdKey = nil
-    slot.drawnCentreX, slot.drawnCentreY, slot.drawnRadius = 0, 0, 0
+    slot.drawnCentreX  = 0
+    slot.drawnCentreY  = 0
+    slot.drawnRadius   = 0
     starPool[index] = slot
 end
 
@@ -378,14 +400,16 @@ end
 local function collect()
     if selfTestRoster then
         wantedRoster = selfTestRoster
-        wantedCount, streamedOutCount = #selfTestRoster, 0
+        wantedCount = #selfTestRoster
+        streamedOutCount = 0
     else
         local players = Players:GetPlayers()
         totalPlayerCount = #players
 
         -- pre-warm names for EVERY player, so nobody becomes wanted and then
         -- sits on a fallback. Keyed by UserId so renames do not invalidate.
-        local namesToFetch, now = {}, os.clock()
+        local namesToFetch = {}
+        local now = os.clock()
         for _, player in ipairs(players) do
             local userIdKey = tostring(player.UserId)
             if displayNameByUserId[userIdKey] == nil
@@ -398,7 +422,8 @@ local function collect()
         fetchDisplayNames(namesToFetch)
 
         wantedRoster = {}
-        wantedCount, streamedOutCount = 0, 0
+        wantedCount = 0
+        streamedOutCount = 0
         for _, player in ipairs(players) do
             local wantedValue = player:FindFirstChild("Is_Wanted")
             if wantedValue then
@@ -427,11 +452,15 @@ local function collect()
 
     highestLevel = (wantedRoster[1] and wantedRoster[1].level) or 1
     if highestLevel <= 0 then highestLevel = 1 end
-    visibleRowCount = #wantedRoster > Config.Board.MaxRows
-        and Config.Board.MaxRows or #wantedRoster
+    visibleRowCount = #wantedRoster
+    if visibleRowCount > Config.Board.MaxRows then
+        visibleRowCount = Config.Board.MaxRows
+    end
 
     local mdtNames
-    nameSourceCounts.fromApi, nameSourceCounts.fromMdt, nameSourceCounts.fromUsername = 0, 0, 0
+    nameSourceCounts.fromApi = 0
+    nameSourceCounts.fromMdt = 0
+    nameSourceCounts.fromUsername = 0
     for rowIndex = 1, visibleRowCount do
         local entry = wantedRoster[rowIndex]
         local row = boardRows[rowIndex]
@@ -452,7 +481,11 @@ local function collect()
         row.subtitle = "@" .. entry.player.Name .. "  ·  " .. entry.level
         row.isHot = entry.level >= Config.Board.HotThreshold
         local fraction = entry.level / highestLevel
-        if fraction < 0.06 then fraction = 0.06 elseif fraction > 1 then fraction = 1 end
+        if fraction < 0.06 then
+            fraction = 0.06
+        elseif fraction > 1 then
+            fraction = 1
+        end
         row.barWidth = Config.Board.BarWidth * fraction
         row.offsetY = Config.Board.Padding + Config.Board.HeaderHeight
             + (rowIndex - 1) * Config.Board.RowHeight
@@ -476,7 +509,8 @@ end)
 
 -- ============================== BOARD RENDER ==============================
 local function drawBoard()
-    local padding, rowHeight = Config.Board.Padding, Config.Board.RowHeight
+    local padding  = Config.Board.Padding
+    local rowHeight = Config.Board.RowHeight
     local barWidth = Config.Board.BarWidth
 
     boardPanel.Visible = true
@@ -487,8 +521,8 @@ local function drawBoard()
     boardTitle.Position = Vector2.new(boardPositionX + padding, boardPositionY + padding)
 
     local hiddenCount = #wantedRoster - visibleRowCount
-    boardCountLabel.Text = visibleRowCount .. " active / " .. totalPlayerCount .. " players"
-        .. (hiddenCount > 0 and ("  +" .. hiddenCount) or "")
+    boardCountLabel.Text = visibleRowCount .. " active / " .. totalPlayerCount
+        .. " players" .. (hiddenCount > 0 and ("  +" .. hiddenCount) or "")
     boardCountLabel.Position = Vector2.new(boardPositionX + padding + 64,
         boardPositionY + padding + 3)
     boardCountLabel.Visible = true
@@ -502,7 +536,8 @@ local function drawBoard()
         boardPositionY + boardHeight - padding - 10)
 
     for rowIndex = 1, Config.Board.MaxRows do
-        local slot, row = boardPool[rowIndex], boardRows[rowIndex]
+        local slot = boardPool[rowIndex]
+        local row = boardRows[rowIndex]
         if rowIndex <= visibleRowCount then
             local screenY = boardPositionY + row.offsetY
             slot.backdrop.Position = Vector2.new(boardPositionX + padding, screenY)
@@ -541,153 +576,159 @@ local function hideBoard()
 end
 
 -- ============================== STAR RENDER ==============================
-local currentCamera
-local viewportWidth, viewportHeight = 1920, 1080
+-- One target, isolated. Returns true if a star now occupies slotIndex.
+-- A dead instance (respawn) or destroyed camera throws HERE and costs only
+-- this target its frame; the caller still runs cleanup for everything else.
+local function updateStarSlot(slotIndex, entry)
+    local rootPart = entry.rootPart
+    if rootPart == nil then return false end
+    local rootPosition = rootPart.Position
+    if rootPosition == nil then return false end
 
-local function hideAllStars()
-    for index = 1, Config.Stars.MaxTargets do
+    local anchorX = rootPosition.X
+    local anchorY = rootPosition.Y + 1.6
+    local anchorZ = rootPosition.Z
+    local headPart = entry.headPart
+    if headPart ~= nil then
+        local headPosition = headPart.Position
+        if headPosition ~= nil then
+            anchorX, anchorY, anchorZ = headPosition.X, headPosition.Y, headPosition.Z
+        end
+    end
+
+    local gotCamera, cameraPosition = pcall(function() return currentCamera.Position end)
+    if not gotCamera or cameraPosition == nil then return false end
+
+    local offsetX = anchorX - cameraPosition.X
+    local offsetY = anchorY - cameraPosition.Y
+    local offsetZ = anchorZ - cameraPosition.Z
+    local distanceSquared = offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ
+    if distanceSquared > maxDistanceSquared then return false end
+
+    local projected, isOnScreen =
+        WorldToScreen(Vector3.new(anchorX, anchorY + 0.7, anchorZ))
+    if not isOnScreen or projected == nil then return false end
+    if projected.X <= minScreenX or projected.X >= maxScreenX then return false end
+    if projected.Y <= minScreenY or projected.Y >= maxScreenY then return false end
+
+    local distance = math.sqrt(distanceSquared)
+    if distance > furthestDrawn then furthestDrawn = distance end
+
+    local starSize = Config.Stars.SizeConstant / (distance > 1 and distance or 1)
+    if starSize < Config.Stars.MinSize then
+        starSize = Config.Stars.MinSize
+    elseif starSize > Config.Stars.MaxSize then
+        starSize = Config.Stars.MaxSize
+    end
+    local centreX = projected.X
+    local centreY = projected.Y - 26 - starSize * 0.5
+
+    local slot = starPool[slotIndex]
+    -- the key includes UserId because slots are positional: a reorder can hand
+    -- this slot a DIFFERENT target
+    local unchanged = slot.wasVisible
+        and slot.drawnUserIdKey == entry.userIdKey
+        and math.abs(centreX - slot.drawnCentreX) < Config.Stars.MoveEpsilon
+        and math.abs(centreY - slot.drawnCentreY) < Config.Stars.MoveEpsilon
+        and starSize == slot.drawnRadius
+    if unchanged then return true end
+
+    local nextIndex = 1
+    for pointIndex = 1, STAR_POINT_COUNT do
+        local triangle = slot.triangles[pointIndex]
+        triangle.PointA = Vector2.new(centreX, centreY)
+        triangle.PointB = Vector2.new(centreX + starVertexX[pointIndex] * starSize,
+            centreY + starVertexY[pointIndex] * starSize)
+        triangle.PointC = Vector2.new(centreX + starVertexX[nextIndex] * starSize,
+            centreY + starVertexY[nextIndex] * starSize)
+        triangle.Visible = true
+        nextIndex = pointIndex + 1
+        if nextIndex > STAR_POINT_COUNT then nextIndex = 1 end
+    end
+
+    -- stem runs from under the label block down to the player's head
+    slot.stem.From = Vector2.new(centreX, centreY - starSize)
+    slot.stem.To = Vector2.new(projected.X, projected.Y + 2)
+    slot.stem.Visible = true
+
+    -- both lines stacked directly above the star, LabelGap apart, so they read
+    -- as one caption instead of being split by the star's full height
+    slot.banner.Position = Vector2.new(centreX,
+        centreY - starSize - Config.Stars.LabelDrop)
+    slot.banner.Visible = true
+
+    slot.tag.Text = entry.player.Name .. "  " .. entry.level .. "  "
+        .. math.floor(distance) .. "m"
+    slot.tag.Position = Vector2.new(centreX,
+        centreY - starSize - Config.Stars.LabelDrop + Config.Stars.LabelGap)
+    slot.tag.Visible = true
+
+    slot.wasVisible = true
+    slot.drawnUserIdKey = entry.userIdKey
+    slot.drawnCentreX = centreX
+    slot.drawnCentreY = centreY
+    slot.drawnRadius = starSize
+    return true
+end
+
+-- cleanup lives in its own function so ANY failure path can still call it
+local function hideStaleStars(drawnCount)
+    for index = drawnCount + 1, Config.Stars.MaxTargets do
         local slot = starPool[index]
         if slot.wasVisible then
             for pointIndex = 1, STAR_POINT_COUNT do
                 slot.triangles[pointIndex].Visible = false
             end
-            slot.stem.Visible, slot.tag.Visible, slot.banner.Visible = false, false, false
+            slot.stem.Visible = false
+            slot.tag.Visible = false
+            slot.banner.Visible = false
             slot.wasVisible = false
         end
     end
-    drawnStarCount = 0
+    drawnStarCount = drawnCount
+    if drawnCount == 0 then furthestDrawn = 0 end
+end
+
+local function refreshScreenBounds()
+    local camera = workspace.CurrentCamera
+    if camera == nil then return end
+    currentCamera = camera
+    local gotSize, size = pcall(function() return camera.ViewportSize end)
+    if gotSize and size ~= nil then
+        local gotWidth, width = pcall(function() return size.X end)
+        local gotHeight, height = pcall(function() return size.Y end)
+        if gotWidth and type(width) == "number" then viewportWidth = width end
+        if gotHeight and type(height) == "number" then viewportHeight = height end
+    end
+    minScreenX, maxScreenX = -300, viewportWidth + 300
+    minScreenY, maxScreenY = -300, viewportHeight + 300
 end
 
 local function drawStars()
-    local camera = workspace.CurrentCamera
-    if camera then
-        currentCamera = camera
-        local gotSize, size = pcall(function() return camera.ViewportSize end)
-        if gotSize and size then
-            local gotWidth, width = pcall(function() return size.X end)
-            local gotHeight, height = pcall(function() return size.Y end)
-            if gotWidth and type(width) == "number" then viewportWidth = width end
-            if gotHeight and type(height) == "number" then viewportHeight = height end
-        end
-    end
-
+    refreshScreenBounds()
     if #wantedRoster == 0 or currentCamera == nil then
-        hideAllStars()
+        hideStaleStars(0)
         return
     end
 
-    local cameraPosition = currentCamera.Position
-    if cameraPosition == nil then return end
-    local cameraX, cameraY, cameraZ = cameraPosition.X, cameraPosition.Y, cameraPosition.Z
-    local minX, maxX = -300, viewportWidth + 300
-    local minY, maxY = -300, viewportHeight + 300
-    local maxDistanceSquared = Config.Stars.MaxDistance * Config.Stars.MaxDistance
-    local limit = #wantedRoster > Config.Stars.MaxTargets
-        and Config.Stars.MaxTargets or #wantedRoster
+    local limit = #wantedRoster
+    if limit > Config.Stars.MaxTargets then limit = Config.Stars.MaxTargets end
     local drawn = 0
+    local firstFailure = nil
 
     for index = 1, limit do
-        local entry = wantedRoster[index]
-        local rootPart = entry.rootPart
-        if rootPart ~= nil then
-            local rootPosition = rootPart.Position
-            if rootPosition ~= nil then
-                local anchorX = rootPosition.X
-                local anchorY = rootPosition.Y + 1.6
-                local anchorZ = rootPosition.Z
-                local headPart = entry.headPart
-                if headPart ~= nil then
-                    local headPosition = headPart.Position
-                    if headPosition ~= nil then
-                        anchorX, anchorY, anchorZ =
-                            headPosition.X, headPosition.Y, headPosition.Z
-                    end
-                end
-
-                local offsetX = anchorX - cameraX
-                local offsetY = anchorY - cameraY
-                local offsetZ = anchorZ - cameraZ
-                -- squared compare first: avoids sqrt for the culled majority
-                local distanceSquared =
-                    offsetX * offsetX + offsetY * offsetY + offsetZ * offsetZ
-
-                if distanceSquared <= maxDistanceSquared then
-                    local projected, isOnScreen = WorldToScreen(
-                        Vector3.new(anchorX, anchorY + 0.7, anchorZ))
-                    if isOnScreen and projected
-                       and projected.X > minX and projected.X < maxX
-                       and projected.Y > minY and projected.Y < maxY then
-                        local distance = math.sqrt(distanceSquared)
-                        local starSize =
-                            Config.Stars.SizeConstant / (distance > 1 and distance or 1)
-                        if starSize < Config.Stars.MinSize then
-                            starSize = Config.Stars.MinSize
-                        elseif starSize > Config.Stars.MaxSize then
-                            starSize = Config.Stars.MaxSize
-                        end
-                        local centreX = projected.X
-                        local centreY = projected.Y - 26 - starSize * 0.5
-
-                        drawn = drawn + 1
-                        local slot = starPool[drawn]
-                        -- the key includes UserId because slots are positional:
-                        -- a reorder can hand this slot a DIFFERENT target
-                        local unchanged = slot.wasVisible
-                            and slot.drawnUserIdKey == entry.userIdKey
-                            and math.abs(centreX - slot.drawnCentreX) < Config.Stars.MoveEpsilon
-                            and math.abs(centreY - slot.drawnCentreY) < Config.Stars.MoveEpsilon
-                            and starSize == slot.drawnRadius
-
-                        if not unchanged then
-                            local nextIndex = 1
-                            for pointIndex = 1, STAR_POINT_COUNT do
-                                local triangle = slot.triangles[pointIndex]
-                                triangle.PointA = Vector2.new(centreX, centreY)
-                                triangle.PointB = Vector2.new(
-                                    centreX + starVertexX[pointIndex] * starSize,
-                                    centreY + starVertexY[pointIndex] * starSize)
-                                triangle.PointC = Vector2.new(
-                                    centreX + starVertexX[nextIndex] * starSize,
-                                    centreY + starVertexY[nextIndex] * starSize)
-                                triangle.Visible = true
-                                nextIndex = pointIndex + 1
-                                if nextIndex > STAR_POINT_COUNT then nextIndex = 1 end
-                            end
-
-                            slot.stem.From = Vector2.new(centreX, centreY + starSize)
-                            slot.stem.To = Vector2.new(projected.X, projected.Y + 2)
-                            slot.stem.Visible = true
-
-                            slot.banner.Position = Vector2.new(centreX, centreY - starSize - 9)
-                            slot.banner.Visible = true
-
-                            slot.tag.Text = entry.player.Name .. "  " .. entry.level
-                                .. "  " .. math.floor(distance) .. "m"
-                            slot.tag.Position = Vector2.new(centreX, centreY + starSize + 4)
-                            slot.tag.Visible = true
-
-                            slot.wasVisible = true
-                            slot.drawnUserIdKey = entry.userIdKey
-                            slot.drawnCentreX, slot.drawnCentreY = centreX, centreY
-                            slot.drawnRadius = starSize
-                        end
-                    end
-                end
-            end
+        -- pcall on a top-level function: no closure allocated per target
+        local ok, didDraw = pcall(updateStarSlot, drawn + 1, wantedRoster[index])
+        if ok then
+            if didDraw then drawn = drawn + 1 end
+        elseif firstFailure == nil then
+            firstFailure = didDraw
         end
     end
 
-    for index = drawn + 1, Config.Stars.MaxTargets do
-        local slot = starPool[index]
-        if slot.wasVisible then
-            for pointIndex = 1, STAR_POINT_COUNT do
-                slot.triangles[pointIndex].Visible = false
-            end
-            slot.stem.Visible, slot.tag.Visible, slot.banner.Visible = false, false, false
-            slot.wasVisible = false
-        end
-    end
-    drawnStarCount = drawn
+    -- ALWAYS runs, even when targets above threw
+    hideStaleStars(drawn)
+    if firstFailure ~= nil then renderError = tostring(firstFailure) end
 end
 
 -- ============================== DRAG ==============================
@@ -720,30 +761,34 @@ heartbeatConnection = RunService.Heartbeat:Connect(function()
         positionNeedsSave = true
         local now = os.clock()
         if now - lastPositionSave > 2 then
-            savePosition(); lastPositionSave = now; positionNeedsSave = false
+            savePosition()
+            lastPositionSave = now
+            positionNeedsSave = false
         end
     end
 end)
 
--- ============================== SINGLE RENDER LOOP ==============================
+-- ============================== RENDER LOOP ==============================
 -- The board is gated on a version counter, so an unchanged frame writes nothing.
 -- Stars run every frame because targets move, but each slot early-outs.
 local renderConnection
 renderConnection = RunService.RenderStepped:Connect(function()
     if not isRunning then return end
-    local succeeded, failure = pcall(function()
-        if isBoardVisible and boardVersion ~= lastDrawnVersion then
-            lastDrawnVersion = boardVersion
-            drawBoard()
-        elseif not isBoardVisible and lastDrawnVersion ~= -2 then
-            lastDrawnVersion = -2
-            hideBoard()
-        end
-        drawStars()
-    end)
-    if not succeeded then
-        renderError = tostring(failure)
-        drawnStarCount = 0
+
+    if isBoardVisible and boardVersion ~= lastDrawnVersion then
+        lastDrawnVersion = boardVersion
+        local boardOk, boardErr = pcall(drawBoard)
+        if not boardOk then renderError = tostring(boardErr) end
+    elseif not isBoardVisible and lastDrawnVersion ~= -2 then
+        lastDrawnVersion = -2
+        hideBoard()
+    end
+
+    -- stars get their own guard, so a board error can never skip star cleanup
+    local starOk, starErr = pcall(drawStars)
+    if not starOk then
+        hideStaleStars(0)
+        renderError = tostring(starErr)
     end
 end)
 
@@ -777,10 +822,12 @@ end
 
 function Wanted.stats()
     return {
-        wanted      = wantedCount,
-        streamedOut = streamedOutCount,
-        drawn       = drawnStarCount,
-        err         = renderError,
+        wanted         = wantedCount,
+        streamedOut    = streamedOutCount,
+        drawn          = drawnStarCount,
+        furthestMetres = math.floor(furthestDrawn),
+        maxDistanceCap = Config.Stars.MaxDistance,
+        err            = renderError,
     }
 end
 
@@ -810,6 +857,20 @@ function Wanted.clearSelfTest()
     return "self test cleared"
 end
 
+-- Diagnostic: a target whose rootPart throws on .Position, proving a bad
+-- target can no longer strand a star on screen.
+function Wanted.simulateDeadTarget()
+    selfTestRoster = { {
+        player    = LocalPlayer,
+        userIdKey = "dead-target",
+        level     = 5,
+        rootPart  = true,
+        headPart  = true,
+    } }
+    collect()
+    return "dead target injected"
+end
+
 function Wanted.toggle()
     isBoardVisible = not isBoardVisible
     boardVersion = boardVersion + 1
@@ -831,18 +892,25 @@ function Wanted.stop()
 
     for index = 1, Config.Board.MaxRows do
         local slot = boardPool[index]
-        slot.backdrop:Remove(); slot.bar:Remove()
-        slot.name:Remove(); slot.meta:Remove()
+        slot.backdrop:Remove()
+        slot.bar:Remove()
+        slot.name:Remove()
+        slot.meta:Remove()
     end
-    boardPanel:Remove(); boardTitle:Remove()
-    boardCountLabel:Remove(); boardEmptyLabel:Remove(); boardHintLabel:Remove()
+    boardPanel:Remove()
+    boardTitle:Remove()
+    boardCountLabel:Remove()
+    boardEmptyLabel:Remove()
+    boardHintLabel:Remove()
 
     for index = 1, Config.Stars.MaxTargets do
         local slot = starPool[index]
         for pointIndex = 1, STAR_POINT_COUNT do
             slot.triangles[pointIndex]:Remove()
         end
-        slot.stem:Remove(); slot.tag:Remove(); slot.banner:Remove()
+        slot.stem:Remove()
+        slot.tag:Remove()
+        slot.banner:Remove()
     end
     print("Wanted.stop() ran -- board and stars removed")
 end
