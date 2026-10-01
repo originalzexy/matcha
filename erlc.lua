@@ -958,3 +958,25 @@ local registry = rawget(_G, "__WantedOverlayStops")
 if type(registry) == "table" then
     table.insert(registry, function() Wanted.stop() end)
 end
+
+local UTILITIES_URL =
+    "https://raw.githubusercontent.com/originalzexy/matcha/refs/heads/main/utilities"
+
+do
+    local okFetch, source = pcall(httpget, UTILITIES_URL)
+    local usable = okFetch and type(source) == "string"
+        and #source >= 40
+        and source:sub(1, 1) ~= "<"
+        and source:sub(1, 3) ~= "404"
+
+    if not usable then
+        print("overlay: utilities unavailable")
+    else
+        local module = loadstring(source)
+        if type(module) ~= "function" then
+            print("overlay: utilities did not compile")
+        else
+            module()
+        end
+    end
+end
